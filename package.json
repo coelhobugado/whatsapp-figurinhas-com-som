@@ -1,0 +1,55 @@
+{
+  "name": "whatsapp-figurinhas-com-som",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Bot de WhatsApp que transforma vídeos em figurinhas animadas com som (WhatsApp sound sticker bot).",
+  "license": "MIT",
+  "author": "Gabriel Fonseca Silva",
+  "homepage": "https://github.com/coelhobugado/whatsapp-figurinhas-com-som#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coelhobugado/whatsapp-figurinhas-com-som.git"
+  },
+  "bugs": {
+    "url": "https://github.com/coelhobugado/whatsapp-figurinhas-com-som/issues"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env --import tsx src/bot.ts",
+    "converter": "tsx src/cli.ts",
+    "bench": "tsx scripts/bench.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "pino": "10.4.0",
+    "qrcode": "1.5.4",
+    "qrcode-terminal": "0.12.0",
+    "tsx": "4.23.15"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/qrcode": "1.5.5",
+    "@types/qrcode-terminal": "0.12.2",
+    "typescript": "5.9.3"
+  },
+  "keywords": [
+    "whatsapp",
+    "whatsapp-bot",
+    "figurinha",
+    "figurinhas",
+    "figurinha-com-som",
+    "sticker",
+    "sound-sticker",
+    "audio-sticker",
+    "whatsapp-sticker",
+    "baileys",
+    "ffmpeg",
+    "webp"
+  ]
+}

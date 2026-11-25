@@ -1,0 +1,7 @@
+node_modules/
+# Sessão do WhatsApp: equivale a estar logado na conta. Nunca publique.
+sessao/
+.env
+saida/
+*.log
+.claude/
