@@ -22,7 +22,7 @@
 
 <p align="center">
   <img src="docs/exemplo-lhama.webp" alt="Figurinha animada de uma lhama, gerada pelo bot a partir do curta Caminandes" width="256"><br>
-  <sub>Figurinha de verdade, gerada pelo bot em 3,6 s com <code>!som 1:10-1:14</code>. 🔊 <a href="docs/exemplo-lhama.mp4"><b>Ouça com som</b></a> (o GitHub não toca som em imagens).<br>
+  <sub>Figurinha de verdade, gerada pelo bot em 3,6 s com <code>!som 1:10-1:14</code>. 🔊 <a href="https://github.com/coelhobugado/whatsapp-figurinhas-com-som/raw/main/docs/exemplo-lhama.mp4"><b>Baixe o vídeo com som</b></a> (165 KB; o GitHub não toca som em imagens).<br>
   Cena do curta <a href="https://studio.blender.org/projects/caminandes/">Caminandes: Llama Drama</a> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>.</sub>
 </p>
 
