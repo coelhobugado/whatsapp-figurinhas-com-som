@@ -1,11 +1,13 @@
 import { normalizeMessageContent, type proto, type WAMessage } from '@whiskeysockets/baileys';
 import type { FitMode } from './convert.js';
+import { findLink, type FoundLink } from './link-download.js';
 
-export type Command = 'som' | 'figurinha' | 'ajuda';
+export type Command = 'som' | 'figurinha' | 'baixar' | 'ajuda';
 
 const ALIASES: Record<string, Command> = {
   '!som': 'som', '!fs': 'som', '!figsom': 'som',
   '!fig': 'figurinha', '!figurinha': 'figurinha', '!f': 'figurinha', '!s': 'figurinha',
+  '!baixar': 'baixar', '!dl': 'baixar', '!video': 'baixar', '!vídeo': 'baixar',
   '!ajuda': 'ajuda', '!help': 'ajuda', '!comandos': 'ajuda',
 };
 
@@ -14,8 +16,10 @@ export const HELP_TEXT = [
   '',
   '*!som* — envie um vídeo com a legenda !som, ou responda a um vídeo com !som.',
   '*!fig* — figurinha comum (sem som) de foto, vídeo ou GIF.',
+  '*!baixar <link>* — baixa o vídeo do TikTok (sem marca d\'água), Instagram ou YouTube.',
   '*!ajuda* — mostra esta mensagem.',
   '',
+  'No lugar do vídeo, dá para mandar o link: *!som <link>* ou *!fig <link>* (TikTok, Instagram ou YouTube).',
   'A figurinha preenche o quadrado cortando as sobras. Para manter a imagem inteira, use *!som inteiro* ou *!fig inteiro*.',
   'Limites: usa os primeiros 10 segundos, arquivo de até 16 MB. Vídeos mandados como documento também valem.',
 ].join('\n');
@@ -67,4 +71,14 @@ export function findMedia(message: WAMessage): MediaSource | undefined {
       message: quotedContent,
     },
   };
+}
+
+/** Link de TikTok/Instagram/YouTube no texto da mensagem ou, se não houver, na mensagem citada. */
+export function findMessageLink(message: WAMessage): FoundLink | undefined {
+  const content = normalizeMessageContent(message.message);
+  const own = findLink(messageText(content));
+  if (own) return own;
+  const context = content?.extendedTextMessage?.contextInfo ?? content?.imageMessage?.contextInfo
+    ?? content?.videoMessage?.contextInfo ?? content?.documentMessage?.contextInfo;
+  return findLink(messageText(normalizeMessageContent(context?.quotedMessage)));
 }

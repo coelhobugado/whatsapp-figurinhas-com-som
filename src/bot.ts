@@ -5,9 +5,10 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
-import { findMedia, HELP_TEXT, messageText, parseCommand, parseFit, type Command, type MediaSource } from './commands.js';
+import { findMedia, findMessageLink, HELP_TEXT, messageText, parseCommand, parseFit, type Command } from './commands.js';
 import { createAnimatedSticker, createStaticSticker, MAX_INPUT_BYTES, type StickerResult } from './convert.js';
 import { checkTools, ConversionError, ToolError } from './ffmpeg.js';
+import { downloadFromLink, LinkError, PLATFORM_NAME, toWhatsAppVideo, type FoundLink } from './link-download.js';
 import { JobQueue, TimeoutError } from './queue.js';
 import { markConnected, setQr, startQrPage } from './qr-page.js';
 import { sendSoundSticker } from './sound-sticker.js';
@@ -23,6 +24,8 @@ const STICKER_META = { packName: process.env.STICKER_PACK_NAME ?? 'Criada por De
 const DEBUG = process.env.DEBUG === 'true';
 const MAX_PENDING = Number(process.env.MAX_PENDING || 5);
 const MAX_AGE_SECONDS = 5 * 60;
+/** Tamanho máximo do vídeo baixado pelo !baixar. */
+const MAX_DOWNLOAD_BYTES = Number(process.env.MAX_DOWNLOAD_MB || 60) * 1024 * 1024;
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
 let socket: WASocket;
@@ -104,6 +107,7 @@ async function download(source: WAMessage): Promise<Buffer> {
 /** Texto amigável para cada tipo de falha. */
 function friendlyError(error: unknown): string {
   if (error instanceof ConversionError) return `Não consegui criar a figurinha: ${error.message}`;
+  if (error instanceof LinkError) return error.message;
   if (error instanceof DownloadError) return 'Não consegui baixar o arquivo do WhatsApp (ele pode ter expirado). Reenvie o vídeo e tente de novo.';
   if (error instanceof TimeoutError) return 'Demorou demais para processar. Tente um vídeo mais curto ou mais leve.';
   if (error instanceof ToolError && /não foi encontrado/.test(error.message)) return 'O bot está sem o FFmpeg instalado. Avise quem cuida dele.';
@@ -118,7 +122,7 @@ async function sendPlainSticker(message: WAMessage, result: StickerResult): Prom
 }
 
 /** Tenta a figurinha com som; devolve um aviso se precisou cair para a versão sem som. */
-async function trySoundSticker(message: WAMessage, media: MediaSource, result: StickerResult): Promise<{ sent: boolean; notice?: string }> {
+async function trySoundSticker(message: WAMessage, media: { gif: boolean }, result: StickerResult): Promise<{ sent: boolean; notice?: string }> {
   if (!result.hasAudio) return { sent: false, notice: media.gif ? 'GIF não tem som, então mandei sem som.' : 'Esse vídeo não tem áudio, então mandei sem som.' };
   if (result.audioSilent) return { sent: false, notice: 'O áudio desse vídeo está mudo, então mandei sem som.' };
   if (!result.audio) {
@@ -135,24 +139,61 @@ async function trySoundSticker(message: WAMessage, media: MediaSource, result: S
   }
 }
 
-async function handle(command: Command, text: string, message: WAMessage): Promise<void> {
-  if (command === 'ajuda') { await reply(message, HELP_TEXT); return; }
-  const media = findMedia(message);
-  if (!media) {
-    await reply(message, command === 'som'
-      ? 'Mande um vídeo com a legenda *!som* ou responda a um vídeo com *!som*.'
-      : 'Mande uma foto, vídeo ou GIF com a legenda *!fig* ou responda a um deles com *!fig*.');
+async function linkDownload(link: FoundLink, maxBytes: number, headSeconds?: number) {
+  return downloadFromLink(link, { maxBytes, headSeconds, log: DEBUG ? m => log(`[link] ${m}`) : undefined });
+}
+
+/** !baixar <link>: devolve o próprio vídeo (TikTok sem marca d'água, Instagram, YouTube). */
+async function handleDownload(message: WAMessage): Promise<void> {
+  const link = findMessageLink(message);
+  if (!link) {
+    await reply(message, 'Mande *!baixar* seguido do link do TikTok, Instagram ou YouTube (ou responda a uma mensagem com o link).');
     return;
   }
-  if (media.fileLength > MAX_INPUT_BYTES) { await reply(message, 'Esse arquivo passa de 16 MB. Corte o vídeo ou mande um menor.'); return; }
+  const started = performance.now();
+  await react(message, '⏳');
+  try {
+    const video = await linkDownload(link, MAX_DOWNLOAD_BYTES);
+    const buffer = await toWhatsAppVideo(video.buffer);
+    if (buffer.length > MAX_DOWNLOAD_BYTES) throw new ConversionError(`O vídeo passa de ${Math.round(MAX_DOWNLOAD_BYTES / 1024 / 1024)} MB.`);
+    const caption = video.title?.trim() ? video.title.trim().slice(0, 300) : undefined;
+    await retryOnce(() => socket.sendMessage(message.key.remoteJid!, { video: buffer, mimetype: 'video/mp4', caption }, { quoted: message }), 'Envio do vídeo');
+    await react(message, '✅');
+    log(`!baixar ${PLATFORM_NAME[link.platform]} ok em ${((performance.now() - started) / 1000).toFixed(1)} s (${(buffer.length / 1024 / 1024).toFixed(1)} MB)`);
+  } catch (error) {
+    logError(`!baixar falhou em ${((performance.now() - started) / 1000).toFixed(1)} s:`, error);
+    await react(message, '❌');
+    await reply(message, error instanceof LinkError ? error.message
+      : error instanceof ConversionError ? `Não consegui mandar o vídeo: ${error.message}` : 'Algo deu errado ao baixar o vídeo. Tente de novo.');
+  }
+}
+
+async function handle(command: Command, text: string, message: WAMessage): Promise<void> {
+  if (command === 'ajuda') { await reply(message, HELP_TEXT); return; }
+  if (command === 'baixar') { await handleDownload(message); return; }
+  const media = findMedia(message);
+  const link = media ? undefined : findMessageLink(message);
+  if (!media && !link) {
+    await reply(message, command === 'som'
+      ? 'Mande um vídeo com a legenda *!som*, responda a um vídeo com *!som*, ou mande *!som <link>* do TikTok, Instagram ou YouTube.'
+      : 'Mande uma foto, vídeo ou GIF com a legenda *!fig*, responda a um deles com *!fig*, ou mande *!fig <link>*.');
+    return;
+  }
+  if (media && media.fileLength > MAX_INPUT_BYTES) { await reply(message, 'Esse arquivo passa de 16 MB. Corte o vídeo ou mande um menor.'); return; }
 
   const started = performance.now();
   const steps: string[] = [];
   await react(message, '⏳');
   try {
-    const input = await download(media.message);
     const fit = parseFit(text);
-    if (media.kind === 'image') {
+    let input: Buffer;
+    if (media) input = await download(media.message);
+    else {
+      const t0 = performance.now();
+      input = (await linkDownload(link!, MAX_INPUT_BYTES, 10)).buffer;
+      steps.push(`link ${PLATFORM_NAME[link!.platform]} ${Math.round(performance.now() - t0)}ms`);
+    }
+    if (media?.kind === 'image') {
       const result = await createStaticSticker(input, fit, STICKER_META);
       await sendPlainSticker(message, result);
       if (command === 'som') await reply(message, 'Foto não tem som 🙂 Mandei uma figurinha comum.');
@@ -170,14 +211,14 @@ async function handle(command: Command, text: string, message: WAMessage): Promi
 
     let withSound = false;
     if (command === 'som') {
-      const sound = await trySoundSticker(message, media, result);
+      const sound = await trySoundSticker(message, { gif: media?.gif ?? false }, result);
       withSound = sound.sent;
       if (sound.notice) notices.push(sound.notice);
     }
     if (!withSound) await sendPlainSticker(message, result);
     await react(message, withSound ? '🔊' : '✅');
     if (notices.length) await reply(message, notices.join('\n'));
-    log(`!${command} ${withSound ? 'com som' : 'sem som'} ok em ${((performance.now() - started) / 1000).toFixed(1)} s` +
+    log(`!${command}${link ? ` (link ${PLATFORM_NAME[link.platform]})` : ''} ${withSound ? 'com som' : 'sem som'} ok em ${((performance.now() - started) / 1000).toFixed(1)} s` +
       ` (${Math.round(result.sticker.length / 1024)} KB)${steps.length ? ` — ${steps.join(', ')}` : ''}`);
   } catch (error) {
     logError(`!${command} falhou em ${((performance.now() - started) / 1000).toFixed(1)} s:`, error);
@@ -230,7 +271,7 @@ async function connect(): Promise<void> {
     if (connection === 'open') {
       reconnectAttempt = 0;
       markConnected();
-      log(`Bot conectado. Comandos: !som, !fig, !ajuda. ${ALLOWED.size ? `Liberado para ${ALLOWED.size} número(s).` : 'Liberado para todos.'}`);
+      log(`Bot conectado. Comandos: !som, !fig, !baixar, !ajuda. ${ALLOWED.size ? `Liberado para ${ALLOWED.size} número(s).` : 'Liberado para todos.'}`);
     }
     if (connection === 'close' && !stopping && socket === current) {
       const status = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;

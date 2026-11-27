@@ -1,0 +1,265 @@
+import { execFile } from 'node:child_process';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { ConversionError, ffmpeg, runFull, withTempDir } from './ffmpeg.js';
+
+/**
+ * Baixa vídeos de TikTok (sem marca d'água), Instagram e YouTube a partir do link.
+ *
+ * Cada plataforma tem uma lista de "fontes" (bibliotecas JS) tentadas em ordem: esses
+ * scrapers quebram de vez em quando, então se uma falhar a próxima assume. Por último,
+ * se o `yt-dlp` estiver instalado, ele também entra como reserva.
+ */
+
+export type Platform = 'tiktok' | 'instagram' | 'youtube';
+export type FoundLink = { url: string; platform: Platform };
+export type LinkVideo = { buffer: Buffer; platform: Platform; title?: string; trimmed: boolean };
+
+const PATTERNS: [Platform, RegExp][] = [
+  ['tiktok', /https?:\/\/(?:[a-z0-9-]+\.)?tiktok\.com\/[^\s]+/i],
+  ['instagram', /https?:\/\/(?:www\.)?(?:instagram\.com|instagr\.am)\/(?:[^\s/]+\/)?(?:reels?|p|tv)\/[^\s]+/i],
+  ['youtube', /https?:\/\/(?:(?:www|m|music)\.)?(?:youtube\.com\/(?:watch\?[^\s]*v=|shorts\/|live\/|embed\/)|youtu\.be\/)[^\s]+/i],
+];
+
+export const PLATFORM_NAME: Record<Platform, string> = { tiktok: 'TikTok', instagram: 'Instagram', youtube: 'YouTube' };
+
+/** Primeiro link de TikTok, Instagram ou YouTube no texto. */
+export function findLink(text: string): FoundLink | undefined {
+  let best: (FoundLink & { index: number }) | undefined;
+  for (const [platform, re] of PATTERNS) {
+    const m = re.exec(text);
+    if (m && (!best || m.index < best.index)) best = { url: m[0].replace(/[)\].,!?>]+$/, ''), platform, index: m.index };
+  }
+  return best && { url: best.url, platform: best.platform };
+}
+
+export function youtubeId(url: string): string | undefined {
+  return /(?:v=|youtu\.be\/|shorts\/|live\/|embed\/)([\w-]{11})/.exec(url)?.[1];
+}
+
+/** O link foi encontrado, mas nenhuma fonte conseguiu o vídeo. Mensagem pronta para o usuário. */
+export class LinkError extends Error {}
+
+class TooBigError extends Error {}
+
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
+type Candidate = { url: string; title?: string; headers?: Record<string, string> };
+type Source = { name: string; resolve: (link: string) => Promise<Candidate[]> };
+
+const withTimeout = <T>(work: Promise<T>, ms: number, label: string) => Promise.race([
+  work, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${label}: tempo esgotado`)), ms)),
+]);
+
+const nonEmpty = (urls: (string | undefined | null)[]) => urls.filter((u): u is string => typeof u === 'string' && /^https?:\/\//.test(u));
+
+// ---------------------------------------------------------------- fontes por plataforma
+
+const SOURCES: Record<Platform, Source[]> = {
+  tiktok: [
+    {
+      // API do próprio TikTok: `playAddr` é o arquivo sem marca d'água (`downloadAddr` tem a marca).
+      name: 'tiktok-api-dl v1',
+      async resolve(link) {
+        const { default: tt } = await import('@tobyg74/tiktok-api-dl');
+        const r = await tt.Downloader(link, { version: 'v1' });
+        if (r.status !== 'success' || !r.result) throw new Error(r.message ?? 'sem resultado');
+        if (r.result.type === 'image') throw new LinkError('Esse TikTok é um post de fotos, não um vídeo.');
+        return nonEmpty(r.result.video?.playAddr ?? []).map(url => ({ url, title: r.result!.desc, headers: { Referer: 'https://www.tiktok.com/' } }));
+      },
+    },
+    {
+      name: 'btch-downloader ttdl',
+      async resolve(link) {
+        const { ttdl } = await import('btch-downloader');
+        const r = await ttdl(link) as { status?: boolean; title?: string; video?: string[] };
+        if (!r.status) throw new Error('sem resultado');
+        return nonEmpty(r.video ?? []).map(url => ({ url, title: r.title }));
+      },
+    },
+    {
+      name: 'tiktok-api-dl v2',
+      async resolve(link) {
+        const { default: tt } = await import('@tobyg74/tiktok-api-dl');
+        const r = await tt.Downloader(link, { version: 'v2' });
+        if (r.status !== 'success' || !r.result) throw new Error(r.message ?? 'sem resultado');
+        return nonEmpty(r.result.video?.playAddr ?? []).map(url => ({ url, title: r.result!.desc }));
+      },
+    },
+  ],
+  instagram: [
+    {
+      name: 'btch-downloader igdl',
+      async resolve(link) {
+        const { igdl } = await import('btch-downloader');
+        const r = await igdl(link) as { status?: boolean; result?: { url?: string }[] };
+        if (!r.status) throw new Error('sem resultado');
+        return nonEmpty((r.result ?? []).map(item => item.url)).map(url => ({ url }));
+      },
+    },
+    {
+      name: 'instagram-url-direct',
+      async resolve(link) {
+        const { instagramGetUrl } = await import('instagram-url-direct');
+        const r = await instagramGetUrl(link, { retries: 1, delay: 500 });
+        const videos = r.media_details.filter(m => m.type === 'video').map(m => m.url);
+        if (!videos.length && r.media_details.length) throw new LinkError('Esse post do Instagram só tem fotos, não um vídeo.');
+        return nonEmpty(videos).map(url => ({ url, title: r.post_info?.caption }));
+      },
+    },
+  ],
+  youtube: [
+    {
+      // Cliente ANDROID do YouTube: devolve o MP4 com vídeo+áudio juntos (360p), sem precisar decifrar.
+      name: 'youtubei.js',
+      async resolve(link) {
+        const id = youtubeId(link);
+        if (!id) throw new LinkError('Não reconheci esse link do YouTube.');
+        const { Innertube, Log } = await import('youtubei.js');
+        Log.setLevel(Log.Level.NONE);
+        const yt = await Innertube.create({ retrieve_player: false });
+        for (const client of ['ANDROID', 'MWEB'] as const) {
+          const info = await yt.getBasicInfo(id, { client }).catch(() => undefined);
+          const formats = (info?.streaming_data?.formats ?? [])
+            .filter(f => f.url && f.has_audio !== false && f.mime_type?.startsWith('video/mp4'));
+          if (formats.length) return formats.map(f => ({ url: f.url!, title: info?.basic_info.title }));
+        }
+        throw new Error('nenhum formato com áudio');
+      },
+    },
+  ],
+};
+
+// ---------------------------------------------------------------- baixar
+
+/** Baixa um arquivo, desistindo se passar de `maxBytes`. */
+async function fetchLimited(c: Candidate, maxBytes: number): Promise<Buffer> {
+  const res = await fetch(c.url, { headers: { 'User-Agent': UA, ...c.headers }, redirect: 'follow', signal: AbortSignal.timeout(90_000) });
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+  const type = res.headers.get('content-type') ?? '';
+  if (/text\/html|application\/json/.test(type)) throw new Error(`resposta não é vídeo (${type})`);
+  const length = Number(res.headers.get('content-length') ?? 0);
+  if (length > maxBytes) { await res.body.cancel(); throw new TooBigError(); }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of res.body) {
+    total += chunk.length;
+    if (total > maxBytes) throw new TooBigError();
+    chunks.push(Buffer.from(chunk));
+  }
+  if (total < 10_000) throw new Error(`arquivo pequeno demais (${total} bytes)`);
+  return Buffer.concat(chunks);
+}
+
+/** Pega só os primeiros `seconds` segundos direto do link, sem baixar o vídeo todo (para figurinha). */
+async function fetchHead(c: Candidate, seconds: number, maxBytes: number): Promise<Buffer> {
+  return withTempDir(async dir => {
+    const out = join(dir, 'corte.mp4');
+    const headers = Object.entries(c.headers ?? {}).map(([k, v]) => `${k}: ${v}\r\n`).join('');
+    await ffmpeg(['-user_agent', UA, ...(headers ? ['-headers', headers] : []), '-t', String(seconds), '-i', c.url,
+      '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy', '-movflags', '+faststart', out], 90_000);
+    const buffer = await readFile(out);
+    if (buffer.length > maxBytes) throw new TooBigError();
+    return buffer;
+  });
+}
+
+function hasYtDlp(): Promise<boolean> {
+  return new Promise(resolve => execFile(process.env.YTDLP_PATH || 'yt-dlp', ['--version'], { timeout: 10_000 }, error => resolve(!error)));
+}
+
+/** Reserva final: yt-dlp (se instalado). No TikTok ele já baixa a versão sem marca d'água. */
+async function viaYtDlp(link: string, maxBytes: number, headSeconds?: number): Promise<Buffer> {
+  return withTempDir(async dir => {
+    const args = ['--no-playlist', '--no-warnings', '-q', '--max-filesize', String(maxBytes),
+      '-f', 'b[ext=mp4][vcodec!=none][acodec!=none]/b[vcodec!=none][acodec!=none]/b',
+      ...(headSeconds ? ['--download-sections', `*0-${headSeconds}`] : []),
+      '-o', join(dir, 'video.%(ext)s'), link];
+    await new Promise<void>((resolve, reject) => execFile(process.env.YTDLP_PATH || 'yt-dlp', args,
+      { timeout: 180_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 },
+      (error, _out, stderr) => error ? reject(new Error(String(stderr || error.message).trim().slice(-300))) : resolve()));
+    const file = (await readdir(dir)).find(f => f.startsWith('video.') && !f.endsWith('.part'));
+    if (!file) throw new TooBigError();
+    return readFile(join(dir, file));
+  });
+}
+
+export type LinkDownloadOptions = {
+  /** Tamanho máximo aceito. */
+  maxBytes: number;
+  /** Para figurinha: se o vídeo for grande, pega só os primeiros N segundos em vez de recusar. */
+  headSeconds?: number;
+  log?: (message: string) => void;
+};
+
+export async function downloadFromLink(link: FoundLink, options: LinkDownloadOptions): Promise<LinkVideo> {
+  const { maxBytes, headSeconds, log = () => {} } = options;
+  let tooBig = false;
+  let userError: LinkError | undefined;
+
+  for (const source of SOURCES[link.platform]) {
+    let candidates: Candidate[];
+    try {
+      candidates = await withTimeout(source.resolve(link.url), 45_000, source.name);
+      if (!candidates.length) throw new Error('nenhum vídeo no resultado');
+    } catch (error) {
+      if (error instanceof LinkError) { userError ??= error; continue; }
+      log(`${source.name} falhou: ${error instanceof Error ? error.message : error}`);
+      continue;
+    }
+    for (const candidate of candidates.slice(0, 3)) {
+      try {
+        return { buffer: await fetchLimited(candidate, maxBytes), platform: link.platform, title: candidate.title, trimmed: false };
+      } catch (error) {
+        if (error instanceof TooBigError) {
+          tooBig = true;
+          if (headSeconds) {
+            try {
+              return { buffer: await fetchHead(candidate, headSeconds, maxBytes), platform: link.platform, title: candidate.title, trimmed: true };
+            } catch (cutError) { log(`${source.name}: corte falhou: ${cutError instanceof Error ? cutError.message : cutError}`); }
+          }
+          continue;
+        }
+        log(`${source.name}: download falhou: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+  }
+
+  if (userError) throw userError;
+  if (await hasYtDlp()) {
+    try {
+      return { buffer: await viaYtDlp(link.url, maxBytes, headSeconds), platform: link.platform, trimmed: !!headSeconds };
+    } catch (error) {
+      if (error instanceof TooBigError) tooBig = true;
+      else log(`yt-dlp falhou: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  if (tooBig) throw new ConversionError(`O vídeo passa de ${Math.round(maxBytes / 1024 / 1024)} MB.`);
+  throw new LinkError(`Não consegui baixar esse vídeo do ${PLATFORM_NAME[link.platform]}. ` +
+    (link.platform === 'instagram' ? 'Confira se o post é público (conta privada não dá).' : 'Confira se o link está certo e o vídeo é público.'));
+}
+
+/**
+ * Deixa o vídeo num formato que todo celular toca no WhatsApp: MP4 com H.264 + AAC.
+ * Se já estiver assim, só reorganiza o arquivo (rápido); senão (ex.: TikTok em H.265), recodifica.
+ */
+export async function toWhatsAppVideo(input: Buffer): Promise<Buffer> {
+  return withTempDir(async dir => {
+    const src = join(dir, 'entrada');
+    const out = join(dir, 'saida.mp4');
+    await writeFile(src, input);
+    const { stdout } = await runFull(process.env.FFPROBE_PATH || 'ffprobe',
+      ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name', '-of', 'json', src], 20_000);
+    const streams = (JSON.parse(stdout) as { streams?: { codec_type?: string; codec_name?: string }[] }).streams ?? [];
+    const video = streams.find(s => s.codec_type === 'video')?.codec_name;
+    const audio = streams.find(s => s.codec_type === 'audio')?.codec_name;
+    if (!video) throw new ConversionError('O link não trouxe um vídeo.');
+    const copyVideo = video === 'h264';
+    const copyAudio = !audio || audio === 'aac';
+    await ffmpeg(['-i', src, '-map', '0:v:0', '-map', '0:a:0?',
+      ...(copyVideo ? ['-c:v', 'copy'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p']),
+      ...(copyAudio ? ['-c:a', 'copy'] : ['-c:a', 'aac', '-b:a', '128k']),
+      '-movflags', '+faststart', out], 300_000);
+    return readFile(out);
+  });
+}
