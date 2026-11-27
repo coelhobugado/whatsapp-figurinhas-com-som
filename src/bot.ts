@@ -5,7 +5,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
-import { findMedia, findMessageLink, formatTime, HELP_TEXT, messageText, parseClip, parseCommand, parseFit, phoneVariants, type Command } from './commands.js';
+import { findMedia, findMessageLink, formatTime, HELP_TEXT, messageText, parseClip, parseCommand, parseFit, allowedNumberWarnings, phoneVariants, type Command } from './commands.js';
 import { createAnimatedSticker, createStaticSticker, MAX_INPUT_BYTES, MAX_SECONDS, type StickerResult } from './convert.js';
 import { checkTools, ConversionError, ToolError } from './ffmpeg.js';
 import { downloadFromLink, LinkError, PLATFORM_NAME, youtubeStart, type FoundLink, type LinkClip } from './link-download.js';
@@ -314,6 +314,7 @@ process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 process.on('unhandledRejection', error => logError('Erro não tratado:', error));
 
 const problems = await checkTools();
+for (const warning of allowedNumberWarnings(ALLOWED_LIST)) console.warn(`⚠️  ALLOWED_NUMBERS: ${warning}`);
 if (problems.length) {
   console.error('O bot não pode começar:\n- ' + problems.join('\n- '));
   console.error('Instale um FFmpeg completo (ex.: https://www.gyan.dev/ffmpeg/builds/ no Windows, "apt install ffmpeg" no Linux, "brew install ffmpeg" no macOS).');

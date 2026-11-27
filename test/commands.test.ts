@@ -72,3 +72,15 @@ test('trecho: lê início e intervalo em vários formatos', async () => {
   assert.equal(formatTime(42), '0:42');
   assert.equal(formatTime(3723), '1:02:03');
 });
+
+test('avisa quando um número do ALLOWED_NUMBERS foi tratado como brasileiro sem o 55', async () => {
+  const { allowedNumberWarnings, assumedBrazilian } = await import('../src/commands.js');
+  assert.equal(assumedBrazilian('79991234567'), true, 'russo sem +: parece brasileiro (DDD 79)');
+  assert.equal(assumedBrazilian('11 99999-8888'), true);
+  assert.equal(assumedBrazilian('5511999998888'), false);
+  assert.equal(assumedBrazilian('14155550100'), false);
+  const avisos = allowedNumberWarnings(['5511999998888', '79991234567', '4155550100', '14155550100']);
+  assert.equal(avisos.length, 2);
+  assert.match(avisos[0]!, /79991234567.*\+55 79 991234567.*código do país/);
+  assert.match(avisos[1]!, /4155550100.*\+55 41 55550100/);
+});

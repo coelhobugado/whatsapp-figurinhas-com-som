@@ -62,14 +62,32 @@ export function parseClip(text: string): Clip | { error: string } | undefined {
 }
 
 /**
+ * O número parece brasileiro escrito sem o 55 (DDD + celular com 9, ou DDD + fixo)?
+ * É um palpite: um número estrangeiro sem o código do país pode ter o mesmo formato
+ * (ex.: Rússia 7 999…, EUA sem o 1). Por isso o bot avisa ao iniciar quando usa esse palpite.
+ */
+export function assumedBrazilian(raw: string): boolean {
+  const d = raw.replace(/\D/g, '');
+  return (d.length === 11 && d[2] === '9') || (d.length === 10 && /^[1-9]{2}[2-9]/.test(d));
+}
+
+/** Avisos para mostrar ao iniciar: números que o bot vai tratar como brasileiros sem o 55. */
+export function allowedNumberWarnings(entries: string[]): string[] {
+  return entries.filter(assumedBrazilian).map(entry => {
+    const d = entry.replace(/\D/g, '');
+    return `Considerei ${d} um número brasileiro (+55 ${d.slice(0, 2)} ${d.slice(2)}). ` +
+      'Se for de outro país, escreva com o código do país (ex.: 1 para EUA, 7 para Rússia).';
+  });
+}
+
+/**
  * Formas aceitas de um número do `ALLOWED_NUMBERS`. Brasil: completa o 55 quando falta (DDD + número)
  * e aceita o celular com e sem o 9 da frente, porque o WhatsApp guarda muitos números antigos sem ele.
  */
 export function phoneVariants(raw: string): string[] {
   const original = raw.replace(/\D/g, '');
   if (!original) return [];
-  const looksBrazilian = (original.length === 11 && original[2] === '9') || (original.length === 10 && /^[1-9]{2}[2-9]/.test(original));
-  const digits = looksBrazilian ? `55${original}` : original;
+  const digits = assumedBrazilian(original) ? `55${original}` : original;
   const variants = new Set([digits, original]);
   if (digits.startsWith('55')) {
     const ddd = digits.slice(2, 4), local = digits.slice(4);
