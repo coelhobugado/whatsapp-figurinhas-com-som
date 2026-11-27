@@ -39,7 +39,7 @@ Ele roda no seu computador ou servidor, conectado a um número de WhatsApp como 
 - 🏷️ **Nome do pacote personalizado** ("Criada por …") gravado na figurinha.
 - 🛟 **Nunca deixa ninguém sem resposta**: se o som falhar, manda a versão sem som e explica o motivo (vídeo sem áudio, áudio mudo, recusa do WhatsApp…).
 - 🧵 **Fila justa**: um pedido por pessoa de cada vez, posição na fila e limite de tempo por pedido.
-- 🔒 **Privado**: nenhum vídeo passa por serviço de terceiros; a conversão é local, com FFmpeg.
+- 🔒 **Privado**: nenhum vídeo passa por serviço de terceiros; links são baixados direto da plataforma e a conversão é local, com FFmpeg.
 - 🙂 Também faz figurinhas comuns (sem som) de foto, vídeo e GIF.
 
 ## Comandos
@@ -48,7 +48,6 @@ Ele roda no seu computador ou servidor, conectado a um número de WhatsApp como 
 |---|---|
 | `!som` (ou `!fs`) | Figurinha animada **com som**. Mande o vídeo com essa legenda ou responda a um vídeo com `!som`. |
 | `!fig` (ou `!f`, `!s`) | Figurinha comum, sem som, de foto, vídeo ou GIF. |
-| `!baixar <link>` (ou `!dl`, `!video`) | Baixa o vídeo do **TikTok (sem marca d'água)**, **Instagram** ou **YouTube** e manda de volta. |
 | `!ajuda` | Lista os comandos. |
 
 - **Link no lugar do vídeo**: `!som <link>` e `!fig <link>` aceitam links de TikTok, Instagram e YouTube (ou responda a uma mensagem com o link). Vídeos grandes têm só os primeiros 10 s baixados.
@@ -92,7 +91,6 @@ Pronto: mande um vídeo com a legenda `!som` para o número do bot.
 | `QR_PORT` | `3999` | Porta da página local do QR. |
 | `MAX_PENDING` | `5` | Quantos pedidos podem esperar na fila. |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | PATH | Caminho do FFmpeg, se não estiver no PATH. |
-| `MAX_DOWNLOAD_MB` | `60` | Tamanho máximo do vídeo no `!baixar`. |
 | `YTDLP_PATH` | PATH | `yt-dlp` opcional, usado como reserva se as bibliotecas JS falharem. |
 | `DEBUG` | `false` | Mostra cada mensagem recebida e o tempo de cada etapa (sem conteúdo nem números). |
 | `LOG_LEVEL` | `silent` | Logs internos do Baileys. |

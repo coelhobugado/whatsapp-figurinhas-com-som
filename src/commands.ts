@@ -2,12 +2,11 @@ import { normalizeMessageContent, type proto, type WAMessage } from '@whiskeysoc
 import type { FitMode } from './convert.js';
 import { findLink, type FoundLink } from './link-download.js';
 
-export type Command = 'som' | 'figurinha' | 'baixar' | 'ajuda';
+export type Command = 'som' | 'figurinha' | 'ajuda';
 
 const ALIASES: Record<string, Command> = {
   '!som': 'som', '!fs': 'som', '!figsom': 'som',
   '!fig': 'figurinha', '!figurinha': 'figurinha', '!f': 'figurinha', '!s': 'figurinha',
-  '!baixar': 'baixar', '!dl': 'baixar', '!video': 'baixar', '!vídeo': 'baixar',
   '!ajuda': 'ajuda', '!help': 'ajuda', '!comandos': 'ajuda',
 };
 
@@ -16,7 +15,6 @@ export const HELP_TEXT = [
   '',
   '*!som* — envie um vídeo com a legenda !som, ou responda a um vídeo com !som.',
   '*!fig* — figurinha comum (sem som) de foto, vídeo ou GIF.',
-  '*!baixar <link>* — baixa o vídeo do TikTok (sem marca d\'água), Instagram ou YouTube.',
   '*!ajuda* — mostra esta mensagem.',
   '',
   'No lugar do vídeo, dá para mandar o link: *!som <link>* ou *!fig <link>* (TikTok, Instagram ou YouTube).',

@@ -8,7 +8,7 @@ import qrcode from 'qrcode-terminal';
 import { findMedia, findMessageLink, HELP_TEXT, messageText, parseCommand, parseFit, type Command } from './commands.js';
 import { createAnimatedSticker, createStaticSticker, MAX_INPUT_BYTES, type StickerResult } from './convert.js';
 import { checkTools, ConversionError, ToolError } from './ffmpeg.js';
-import { downloadFromLink, LinkError, PLATFORM_NAME, toWhatsAppVideo, type FoundLink } from './link-download.js';
+import { downloadFromLink, LinkError, PLATFORM_NAME, type FoundLink } from './link-download.js';
 import { JobQueue, TimeoutError } from './queue.js';
 import { markConnected, setQr, startQrPage } from './qr-page.js';
 import { sendSoundSticker } from './sound-sticker.js';
@@ -24,8 +24,6 @@ const STICKER_META = { packName: process.env.STICKER_PACK_NAME ?? 'Criada por De
 const DEBUG = process.env.DEBUG === 'true';
 const MAX_PENDING = Number(process.env.MAX_PENDING || 5);
 const MAX_AGE_SECONDS = 5 * 60;
-/** Tamanho máximo do vídeo baixado pelo !baixar. */
-const MAX_DOWNLOAD_BYTES = Number(process.env.MAX_DOWNLOAD_MB || 60) * 1024 * 1024;
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
 let socket: WASocket;
@@ -143,34 +141,8 @@ async function linkDownload(link: FoundLink, maxBytes: number, headSeconds?: num
   return downloadFromLink(link, { maxBytes, headSeconds, log: DEBUG ? m => log(`[link] ${m}`) : undefined });
 }
 
-/** !baixar <link>: devolve o próprio vídeo (TikTok sem marca d'água, Instagram, YouTube). */
-async function handleDownload(message: WAMessage): Promise<void> {
-  const link = findMessageLink(message);
-  if (!link) {
-    await reply(message, 'Mande *!baixar* seguido do link do TikTok, Instagram ou YouTube (ou responda a uma mensagem com o link).');
-    return;
-  }
-  const started = performance.now();
-  await react(message, '⏳');
-  try {
-    const video = await linkDownload(link, MAX_DOWNLOAD_BYTES);
-    const buffer = await toWhatsAppVideo(video.buffer);
-    if (buffer.length > MAX_DOWNLOAD_BYTES) throw new ConversionError(`O vídeo passa de ${Math.round(MAX_DOWNLOAD_BYTES / 1024 / 1024)} MB.`);
-    const caption = video.title?.trim() ? video.title.trim().slice(0, 300) : undefined;
-    await retryOnce(() => socket.sendMessage(message.key.remoteJid!, { video: buffer, mimetype: 'video/mp4', caption }, { quoted: message }), 'Envio do vídeo');
-    await react(message, '✅');
-    log(`!baixar ${PLATFORM_NAME[link.platform]} ok em ${((performance.now() - started) / 1000).toFixed(1)} s (${(buffer.length / 1024 / 1024).toFixed(1)} MB)`);
-  } catch (error) {
-    logError(`!baixar falhou em ${((performance.now() - started) / 1000).toFixed(1)} s:`, error);
-    await react(message, '❌');
-    await reply(message, error instanceof LinkError ? error.message
-      : error instanceof ConversionError ? `Não consegui mandar o vídeo: ${error.message}` : 'Algo deu errado ao baixar o vídeo. Tente de novo.');
-  }
-}
-
 async function handle(command: Command, text: string, message: WAMessage): Promise<void> {
   if (command === 'ajuda') { await reply(message, HELP_TEXT); return; }
-  if (command === 'baixar') { await handleDownload(message); return; }
   const media = findMedia(message);
   const link = media ? undefined : findMessageLink(message);
   if (!media && !link) {
@@ -271,7 +243,7 @@ async function connect(): Promise<void> {
     if (connection === 'open') {
       reconnectAttempt = 0;
       markConnected();
-      log(`Bot conectado. Comandos: !som, !fig, !baixar, !ajuda. ${ALLOWED.size ? `Liberado para ${ALLOWED.size} número(s).` : 'Liberado para todos.'}`);
+      log(`Bot conectado. Comandos: !som, !fig, !ajuda. ${ALLOWED.size ? `Liberado para ${ALLOWED.size} número(s).` : 'Liberado para todos.'}`);
     }
     if (connection === 'close' && !stopping && socket === current) {
       const status = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;

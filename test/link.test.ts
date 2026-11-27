@@ -6,7 +6,7 @@ import { findLink, youtubeId } from '../src/link-download.js';
 test('acha links de TikTok, Instagram e YouTube no meio do texto', () => {
   assert.deepEqual(findLink('!som https://vm.tiktok.com/ZMabc123/'), { url: 'https://vm.tiktok.com/ZMabc123/', platform: 'tiktok' });
   assert.deepEqual(findLink('olha https://www.tiktok.com/@user/video/123?lang=pt.'), { url: 'https://www.tiktok.com/@user/video/123?lang=pt', platform: 'tiktok' });
-  assert.equal(findLink('!baixar https://www.instagram.com/reel/ABC_def-1/?igsh=x')?.platform, 'instagram');
+  assert.equal(findLink('!fig https://www.instagram.com/reel/ABC_def-1/?igsh=x')?.platform, 'instagram');
   assert.equal(findLink('https://instagram.com/p/ABC/')?.platform, 'instagram');
   assert.equal(findLink('https://youtu.be/jNQXAC9IVRw?si=a')?.platform, 'youtube');
   assert.equal(findLink('https://www.youtube.com/shorts/jNQXAC9IVRw')?.platform, 'youtube');
@@ -29,6 +29,8 @@ test('extrai o id do YouTube', () => {
   assert.equal(youtubeId('https://www.youtube.com/shorts/jNQXAC9IVRw'), 'jNQXAC9IVRw');
 });
 
-test('comando !baixar e apelidos', () => {
-  for (const c of ['!baixar', '!dl', '!video', '!Vídeo']) assert.equal(parseCommand(`${c} https://youtu.be/x`), 'baixar');
+test('!som e !fig aceitam link; !baixar não existe', () => {
+  assert.equal(parseCommand('!som https://youtu.be/x'), 'som');
+  assert.equal(parseCommand('!fig https://youtu.be/x'), 'figurinha');
+  assert.equal(parseCommand('!baixar https://youtu.be/x'), undefined);
 });
