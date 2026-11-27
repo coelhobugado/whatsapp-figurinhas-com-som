@@ -50,8 +50,11 @@ O bot roda no seu computador ou servidor, conectado a um número de WhatsApp com
 - 🏷️ **Nome do pacote personalizado** ("Criada por …") gravado na figurinha.
 - 🛟 **Nunca deixa ninguém sem resposta**: se o som falhar, manda a versão sem som e explica o motivo (vídeo sem áudio, áudio mudo, recusa do WhatsApp…).
 - 🧵 **Fila justa**: um pedido por pessoa de cada vez, posição na fila e limite de tempo por pedido.
+- 🖥️ **Interface web local**: envie um arquivo ou link pelo navegador, escolha o número de destino e baixe o resultado gerado.
+- 🎵 **Áudio personalizado na interface**: selecione um MP3, M4A, AAC, WAV, OGG/Opus ou FLAC junto com vídeo/GIF. O áudio substitui a faixa do vídeo; usa os primeiros 10 s (ou o tempo da animação).
 - 🔒 **Privado**: a conversão é local, com FFmpeg, e os vídeos não passam por serviços de conversão. Links são baixados da própria plataforma (no TikTok, uma das fontes de reserva usa o site SSSTik).
 - 🙂 Também faz figurinhas comuns (sem som) de foto, vídeo e GIF.
+- 📂 **Arquivo local**: resultados de `!som` ficam em `saida/com-som/` (WebP e Ogg/Opus quando houver áudio); os demais, como `!fig`, ficam em `saida/outros/`. Os arquivos permanecem até serem apagados manualmente.
 
 ## Comandos
 
@@ -66,7 +69,8 @@ O bot roda no seu computador ou servidor, conectado a um número de WhatsApp com
 - Formatos de tempo aceitos: `42`, `42s`, `0:42`, `1:02:03`. No YouTube, o link de "Compartilhar › Começar em" (`?t=42`) já define o início.
 - Também dá para **responder** a uma mensagem que tenha o link ou o vídeo com o comando.
 - `!som inteiro` / `!fig inteiro`: mantém a imagem toda (bordas transparentes) em vez de cortar.
-- Reações do bot: ⏳ processando · 🔊 saiu com som · ✅ saiu sem som · ❌ erro.
+- Em canais, `!som` publica só a figurinha animada, sem áudio e sem posts extras de aviso.
+- Em conversas e grupos, reações do bot: ⏳ processando · 🔊 saiu com som · ✅ saiu sem som · ❌ erro.
 - Limites: até **10 segundos** por figurinha; vídeo enviado de até **16 MB** (por link, vídeos maiores funcionam: só o trecho é baixado).
 
 ## Instalação
@@ -118,6 +122,19 @@ Na primeira vez aparece um **QR** no terminal e também como imagem em **http://
 
 Pronto: mande um vídeo com a legenda `!som` para o número do bot.
 
+## Interface web local
+
+Com o bot em execução, abra **http://localhost:3999** (ou a porta definida em `QR_PORT`). A interface continua disponível depois do pareamento; o bot precisa estar conectado para aceitar pedidos.
+
+1. Informe o número de destino com DDI e DDD. O bot consulta se ele está registrado no WhatsApp antes de converter.
+2. Escolha `!som` ou `!fig`, o enquadramento e, se quiser, o trecho de até 10 segundos.
+3. Envie um vídeo/GIF de até 16 MB ou informe um link compatível do YouTube, TikTok ou Instagram. Opcionalmente, em `!som`, selecione também um áudio de até 16 MB (MP3, M4A, AAC, WAV, OGG/Opus ou FLAC); ele substitui o áudio original. Serão usados os primeiros 10 segundos, limitados à duração da animação. Áudio sozinho não gera figurinha: é necessária uma imagem animada.
+4. Acompanhe a fila: o bot converte, envia a figurinha ao número indicado e arquiva o WebP e, quando houver, o áudio Ogg/Opus em `saida/`. Ao terminar, use os links da página para baixar os arquivos.
+
+O YouTube pode alterar ou restringir os formatos que as bibliotecas conseguem obter. Se a tentativa integrada falhar, instale `yt-dlp` para habilitar a alternativa de download; confira também se o vídeo é público e se sua região/rede permite acesso.
+
+Por padrão, a página só aceita a própria origem em `localhost`/`127.0.0.1`. Se estiver usando o encaminhamento de porta do GitHub Codespaces, defina `ALLOW_CODESPACES_UI=true` no `.env` e mantenha a porta como **Private** na aba **Ports** do Codespaces. Essa opção só autoriza a origem HTTPS do Codespace atual para a porta `QR_PORT`; não torne a porta pública. A mensagem de conclusão indica que o WhatsApp aceitou o envio, não confirma a entrega ao aparelho do destinatário. O processo do bot e a conexão ativa com o WhatsApp são necessários para gerar e enviar.
+
 ## Configuração (`.env`)
 
 | Variável | Padrão | Para quê |
@@ -126,7 +143,8 @@ Pronto: mande um vídeo com a legenda `!som` para o número do bot.
 | `STICKER_PACK_NAME` | `Criada por Dexter` | Nome que aparece ao tocar na figurinha. |
 | `STICKER_PUBLISHER` | vazio | Autor mostrado ao lado do nome. |
 | `AUTH_DIR` | `./sessao` | Onde a sessão do WhatsApp é salva. |
-| `QR_PORT` | `3999` | Porta da página local do QR. |
+| `QR_PORT` | `3999` | Porta da página local do QR e da interface de geração. |
+| `ALLOW_CODESPACES_UI` | `false` | Permite a origem HTTPS do Codespace atual quando a porta encaminhada é privada. |
 | `MAX_PENDING` | `5` | Quantos pedidos podem esperar na fila. |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | PATH | Caminho do FFmpeg, se não estiver no PATH. |
 | `YTDLP_PATH` | PATH | `yt-dlp` opcional, usado como reserva se as bibliotecas JS falharem. |
@@ -184,13 +202,30 @@ O campo 134 e o `StickerMessage.26` não existem no protobuf do [Baileys](https:
 | Arquivo | Papel |
 |---|---|
 | [`src/bot.ts`](src/bot.ts) | Conexão, comandos, fila, mensagens de erro |
-| [`src/convert.ts`](src/convert.ts) | Vídeo → WebP animado + áudio, com a estimativa de tamanho |
+| [`src/convert.ts`](src/convert.ts) | Vídeo → WebP animado + áudio; normaliza áudio enviado separadamente |
+| [`src/archive.ts`](src/archive.ts) | Salva os WebP e áudios Ogg gerados em `saida/` |
 | [`src/sound-sticker.ts`](src/sound-sticker.ts) | Monta e envia a figurinha com som |
 | [`src/webp.ts`](src/webp.ts) | Lê o WebP e grava o nome do pacote (EXIF) |
-| [`src/link-download.ts`](src/link-download.ts) | Baixa vídeos de TikTok/Instagram/YouTube pelo link, com fontes de reserva |
+| [`src/link-download.ts`](src/link-download.ts) | Baixa vídeos por link e tenta `yt-dlp` após falha do extrator principal |
 | [`src/commands.ts`](src/commands.ts) | Comandos e localização da mídia (inclusive citada) |
 | [`src/queue.ts`](src/queue.ts) | Fila com limite por pessoa e tempo máximo |
-| [`src/qr-page.ts`](src/qr-page.ts) | Página local com o QR de vinculação |
+| [`src/qr-page.ts`](src/qr-page.ts) | Interface local para parear, gerar, enviar e baixar figurinhas |
+
+### Arquivamento local dos resultados
+
+Além de enviar a figurinha ao WhatsApp, o bot salva os arquivos gerados na pasta `saida/`, organizada pelo comando:
+
+```text
+saida/
+├── com-som/   # resultados de !som: figurinha.webp e, se houver áudio, figurinha.ogg
+└── outros/    # resultados dos demais comandos, como !fig: figurinha.webp
+```
+
+O WebP e seu Ogg/Opus correspondente usam o mesmo nome-base, gerado com data e identificador único para evitar sobrescritas e não expor o telefone do remetente. O WebP é guardado mesmo quando o vídeo não tem áudio ou a extração falha; nesse caso, não há arquivo `.ogg`. O vídeo original não é arquivado.
+
+O bot grava os arquivos depois da conversão e antes da tentativa de envio, então eles permanecem disponíveis mesmo que o WhatsApp recuse ou não consiga enviar a figurinha. Se a gravação falhar, o erro aparece no terminal e o bot ainda tenta enviar. Os arquivos não são apagados automaticamente: remova-os manualmente quando não precisar mais deles. `saida/` está no `.gitignore`.
+
+Esse arquivo local guarda os componentes gerados, mas **não é um pacote instalável de figurinhas com som**. O áudio é armazenado separadamente em Ogg/Opus e o formato de pacote padrão do WhatsApp não garante que ele seja preservado.
 
 ```bash
 npm run converter -- video.mp4 [--inteiro] [--trecho 0:42-0:47]   # gera saida/video.webp e saida/video.ogg, sem WhatsApp
@@ -248,11 +283,14 @@ Sim, o bot precisa estar rodando para responder. Para ficar 24 h, rode num servi
 **WhatsApp sound sticker bot.** Send a video with the caption `!som` and get back an **animated sticker that plays the video's audio**. Built with Node.js, TypeScript, [Baileys](https://github.com/WhiskeySockets/Baileys) and FFmpeg.
 
 - Turns phone videos, GIFs, videos sent as documents and **YouTube/TikTok/Instagram links** into WhatsApp **stickers with sound** (audio stickers).
+- Local archive: `!som` results are stored in `saida/com-som/` (WebP and Ogg/Opus when audio is available); other results such as `!fig` go to `saida/outros/`. Files stay there until manually deleted.
 - Pick the exact moment: `!som 0:42 <link>` or `!som 0:42-0:47 <link>`; only that clip is downloaded, so it works with hour-long videos. YouTube `?t=` links start at that time.
 - One-click setup on Windows (`INICIAR-WINDOWS.bat` installs Node.js and FFmpeg via winget and opens the QR code in the browser); `iniciar-mac-linux.sh` for macOS/Linux.
 - Fast: ~3–8 s per sticker. The video is decoded once, the WebP quality level is picked by sampling, and the audio is extracted in parallel.
 - Fills the 512×512 square (center crop) or keeps the whole frame with transparent borders (`!som inteiro`).
 - Custom sticker pack name, per-user fair queue, friendly error messages, silent-audio detection, graceful fallback to a regular sticker.
+- In WhatsApp Channels, `!som` posts only the animated sticker, without audio or extra notice posts.
+- Local web interface at `http://localhost:3999`: upload a video/GIF/image or paste a supported video link, choose the recipient and options, then download the generated WebP and Ogg/Opus files. The bot must be running and connected; Codespaces forwarding is opt-in and must remain private.
 - Conversion runs locally; no third-party conversion service. Links are fetched from the platforms themselves (one TikTok fallback uses SSSTik).
 
 **Quick start:** install Node.js 22.12+ and FFmpeg (with libwebp, libopus, libx264), then:
@@ -264,6 +302,10 @@ npm install && cp .env.example .env && npm start
 Scan the QR code (terminal or http://localhost:3999) from **Settings › Linked devices** on the bot's phone. Commands: `!som` (sticker with sound), `!fig` (regular sticker), `!ajuda` (help).
 
 **How the sound sticker is sent:** the WebP and an Ogg/Opus voice-note-style audio are uploaded separately. The audio gets a `streamingSidecar`, and the message is wrapped as `Message.134 (FutureProofMessage) › Message.26 (StickerMessage) › StickerMessage.26 (AudioMessage)`. These fields are not in Baileys' protobuf, so the bot patches `proto.Message.encode` only for marked messages. The format was reverse engineered and may break with WhatsApp updates; this project is not affiliated with WhatsApp or Meta. Use at your own risk.
+
+**Local archive:** The bot stores generated WebP files in `saida/com-som/` for `!som` and `saida/outros/` for other commands such as `!fig`. When audio is available, the matching Ogg/Opus file is stored next to the WebP using the same base name. Files are saved before sending, are not automatically deleted, and the original video is not archived. This local archive is not an installable WhatsApp sound-sticker pack.
+
+**Local web interface:** Open `http://localhost:3999` while the bot is running. Enter a destination number with country and area codes, choose `!som` or `!fig`, adjust framing and an optional clip, then upload a video/GIF (up to 16 MB) or paste a YouTube/TikTok/Instagram link. For `!som`, you may also upload a separate MP3, M4A, AAC, WAV, OGG/Opus or FLAC audio file; it replaces the video's audio and is trimmed to the animation length (up to 10 seconds). Audio alone cannot provide the animated visual. The bot queues the request, sends the sticker to that number, and offers the archived output for download. Access is local by default. For GitHub Codespaces, explicitly enable `ALLOW_CODESPACES_UI=true` and keep the forwarded port private; never make it public.
 
 ## Licença
 

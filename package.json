@@ -18,6 +18,7 @@
     "node": ">=22.12"
   },
   "scripts": {
+    "postinstall": "node scripts/patch-baileys-newsletter.mjs",
     "start": "node --env-file-if-exists=.env --import tsx src/bot.ts",
     "converter": "tsx src/cli.ts",
     "bench": "tsx scripts/bench.ts",

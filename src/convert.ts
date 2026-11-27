@@ -49,11 +49,14 @@ export type StickerResult = {
   hasAudio: boolean;
   /** Áudio Ogg/Opus pronto, quando `withAudio` foi pedido e deu certo. */
   audio?: Buffer;
+  audioDurationMs?: number;
   /** A faixa de áudio existe, mas está em silêncio. */
   audioSilent?: boolean;
   /** Por que o áudio não pôde ser preparado (a figurinha em si saiu). */
   audioError?: Error;
 };
+
+export type PreparedAudio = { audio: Buffer; durationMs: number; silent: boolean };
 
 /**
  * Degraus de qualidade, do melhor para o mais leve: [quadros/s, qualidade WebP, resolução de trabalho].
@@ -134,6 +137,21 @@ async function extractAudio(source: string, start: number, seconds: number, outp
   const raw = /max_volume:\s*(-?[\d.]+|-inf) dB/.exec(stderr)?.[1];
   const maxVolume = raw === '-inf' ? -Infinity : Number(raw);
   return { audio, silent: raw !== undefined && maxVolume <= SILENCE_DB };
+}
+
+/** Normaliza um arquivo de áudio separado para Ogg/Opus, limitado à duração da figurinha. */
+export async function prepareAudio(input: Buffer, maxSeconds = MAX_SECONDS): Promise<PreparedAudio> {
+  checkInput(input);
+  return withTempDir(async dir => {
+    const source = join(dir, 'audio-original'), output = join(dir, 'audio.ogg');
+    await writeFile(source, input);
+    const info = await probe(source);
+    if (!info.hasAudio) throw new ConversionError('Não encontrei uma faixa de áudio nesse arquivo.');
+    const seconds = Math.min(MAX_SECONDS, maxSeconds, info.durationSec ?? MAX_SECONDS);
+    if (seconds < 0.2) throw new ConversionError('O áudio é curto demais (mínimo 0,2 s).');
+    const { audio, silent } = await extractAudio(source, 0, seconds, output);
+    return { audio, durationMs: seconds * 1000, silent };
+  });
 }
 
 /** Foto → figurinha estática (WebP 512×512, até 100 KB). */

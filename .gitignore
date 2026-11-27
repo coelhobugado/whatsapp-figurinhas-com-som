@@ -1,4 +1,5 @@
 node_modules/
+.venv/
 # Sessão do WhatsApp: equivale a estar logado na conta. Nunca publique.
 sessao/
 .env

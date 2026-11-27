@@ -1,4 +1,5 @@
-import { mkdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile } from 'node:fs/promises';
 import makeWASocket, {
   DisconnectReason, downloadMediaMessage, jidDecode, normalizeMessageContent, useMultiFileAuthState,
   type WAMessage, type WASocket,
@@ -6,12 +7,14 @@ import makeWASocket, {
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
 import { findMedia, findMessageLink, formatTime, HELP_TEXT, messageText, parseClip, parseCommand, parseFit, allowedNumberWarnings, phoneVariants, type Command } from './commands.js';
-import { createAnimatedSticker, createStaticSticker, MAX_INPUT_BYTES, MAX_SECONDS, type StickerResult } from './convert.js';
+import { archiveSticker, type ArchivedSticker } from './archive.js';
+import { createAnimatedSticker, createStaticSticker, MAX_INPUT_BYTES, MAX_SECONDS, prepareAudio, type StickerResult } from './convert.js';
 import { checkTools, ConversionError, ToolError } from './ffmpeg.js';
-import { downloadFromLink, LinkError, PLATFORM_NAME, youtubeStart, type FoundLink, type LinkClip } from './link-download.js';
+import { downloadFromLink, findLink, LinkError, PLATFORM_NAME, youtubeStart, type FoundLink, type LinkClip } from './link-download.js';
 import { JobQueue, TimeoutError } from './queue.js';
-import { markConnected, setQr, startQrPage } from './qr-page.js';
+import { LocalUiError, markConnected, markDisconnected, setQr, startQrPage, stopQrPage, type LocalWebJob, type LocalWebRequest } from './qr-page.js';
 import { sendSoundSticker } from './sound-sticker.js';
+import { resolveWhatsAppRecipient } from './web-recipient.js';
 
 // ---------------------------------------------------------------- configuração (.env)
 const AUTH_DIR = process.env.AUTH_DIR || './sessao';
@@ -31,11 +34,16 @@ let socket: WASocket;
 let reconnectAttempt = 0;
 let reconnectTimer: NodeJS.Timeout | undefined;
 let stopping = false;
+let connected = false;
 
 const log = (...parts: unknown[]) => console.log(`[${new Date().toLocaleTimeString('pt-BR')}]`, ...parts);
 const logError = (...parts: unknown[]) => console.error(`[${new Date().toLocaleTimeString('pt-BR')}]`, ...parts);
 
 const queue = new JobQueue(MAX_PENDING, 3 * 60_000, error => logError('Pedido interrompido:', error));
+
+type StoredWebJob = LocalWebJob & { archive?: ArchivedSticker };
+const webJobs = new Map<string, StoredWebJob>();
+const MAX_WEB_JOB_HISTORY = 100;
 
 // ---------------------------------------------------------------- utilidades
 
@@ -71,10 +79,12 @@ async function allowed(message: WAMessage): Promise<boolean> {
 }
 
 async function reply(message: WAMessage, text: string): Promise<void> {
+  if (message.key.remoteJid?.endsWith('@newsletter')) return;
   await socket.sendMessage(message.key.remoteJid!, { text }, { quoted: message }).catch(error => logError('Não consegui responder:', error));
 }
 
 async function react(message: WAMessage, emoji: string): Promise<void> {
+  if (message.key.remoteJid?.endsWith('@newsletter')) return;
   await socket.sendMessage(message.key.remoteJid!, { react: { text: emoji, key: message.key } }).catch(() => {});
 }
 
@@ -107,6 +117,7 @@ async function download(source: WAMessage): Promise<Buffer> {
 
 /** Texto amigável para cada tipo de falha. */
 function friendlyError(error: unknown): string {
+  if (error instanceof LocalUiError) return error.message;
   if (error instanceof ConversionError) return `Não consegui criar a figurinha: ${error.message}`;
   if (error instanceof LinkError) return error.message;
   if (error instanceof DownloadError) return 'Não consegui baixar o arquivo do WhatsApp (ele pode ter expirado). Reenvie o vídeo e tente de novo.';
@@ -117,13 +128,28 @@ function friendlyError(error: unknown): string {
 
 // ---------------------------------------------------------------- pedidos
 
+async function archiveResult(command: Command, result: StickerResult): Promise<ArchivedSticker | undefined> {
+  try {
+    const saved = await archiveSticker(command === 'som' ? 'com-som' : 'outros', result);
+    log(`Arquivado: ${saved.stickerPath}${saved.audioPath ? ` e ${saved.audioPath}` : ''}`);
+    return saved;
+  } catch (error) {
+    logError(`Não consegui arquivar o resultado de !${command}:`, error);
+    return undefined;
+  }
+}
+
+async function sendPlainStickerTo(jid: string, result: StickerResult, quoted?: WAMessage): Promise<void> {
+  await retryOnce(() => socket.sendMessage(jid,
+    { sticker: result.sticker, isAnimated: result.animated, width: 512, height: 512 }, quoted ? { quoted } : {}), 'Envio da figurinha');
+}
+
 async function sendPlainSticker(message: WAMessage, result: StickerResult): Promise<void> {
-  await retryOnce(() => socket.sendMessage(message.key.remoteJid!,
-    { sticker: result.sticker, isAnimated: result.animated, width: 512, height: 512 }, { quoted: message }), 'Envio da figurinha');
+  await sendPlainStickerTo(message.key.remoteJid!, result, message);
 }
 
 /** Tenta a figurinha com som; devolve um aviso se precisou cair para a versão sem som. */
-async function trySoundSticker(message: WAMessage, media: { gif: boolean }, result: StickerResult): Promise<{ sent: boolean; notice?: string }> {
+async function trySoundSticker(jid: string, media: { gif: boolean }, result: StickerResult, quoted?: WAMessage): Promise<{ sent: boolean; notice?: string }> {
   if (!result.hasAudio) return { sent: false, notice: media.gif ? 'GIF não tem som, então mandei sem som.' : 'Esse vídeo não tem áudio, então mandei sem som.' };
   if (result.audioSilent) return { sent: false, notice: 'O áudio desse vídeo está mudo, então mandei sem som.' };
   if (!result.audio) {
@@ -131,8 +157,8 @@ async function trySoundSticker(message: WAMessage, media: { gif: boolean }, resu
     return { sent: false, notice: 'Não consegui extrair o áudio desse vídeo, então mandei sem som.' };
   }
   try {
-    await retryOnce(() => sendSoundSticker(socket, message.key.remoteJid!,
-      { sticker: result.sticker, audio: result.audio!, durationMs: result.durationMs, quoted: message }), 'Envio com som');
+    await retryOnce(() => sendSoundSticker(socket, jid,
+      { sticker: result.sticker, audio: result.audio!, durationMs: result.audioDurationMs ?? result.durationMs, quoted }), 'Envio com som');
     return { sent: true };
   } catch (error) {
     logError('Falha no envio com som:', error);
@@ -142,6 +168,166 @@ async function trySoundSticker(message: WAMessage, media: { gif: boolean }, resu
 
 async function linkDownload(link: FoundLink, maxBytes: number, clip: LinkClip) {
   return downloadFromLink(link, { maxBytes, clip, log: DEBUG ? m => log(`[link] ${m}`) : undefined });
+}
+
+async function resolveWebRecipient(number: string): Promise<string> {
+  let matches: Awaited<ReturnType<WASocket['onWhatsApp']>>;
+  try {
+    matches = await retryOnce(() => socket.onWhatsApp(number), 'Validação do destinatário');
+  } catch (error) {
+    logError('Não consegui validar o destinatário no WhatsApp:', error);
+    throw new LocalUiError(502, 'Não consegui confirmar o número no WhatsApp. Tente novamente.');
+  }
+  const resolved = resolveWhatsAppRecipient(matches);
+  if (resolved.status === 'unavailable') throw new LocalUiError(502, 'O WhatsApp não retornou o resultado da validação. Tente novamente.');
+  if (resolved.status === 'not-found') throw new LocalUiError(422, 'Esse número não foi encontrado no WhatsApp. Confira o DDI e o DDD.');
+  return resolved.jid;
+}
+
+async function processWebRequest(
+  request: LocalWebRequest,
+  onArchived?: (archive: ArchivedSticker | undefined) => void,
+): Promise<{ archive?: ArchivedSticker; message: string }> {
+  if (!connected || !socket?.user?.id) throw new LocalUiError(503, 'A conexão com o WhatsApp caiu. Aguarde o bot reconectar.');
+  const jid = await resolveWebRecipient(request.recipient);
+
+  const commandText = request.command === 'som' ? '!som' : '!fig';
+  const parsedClip = parseClip(request.clip ? `${commandText} ${request.clip}` : commandText);
+  if (parsedClip && 'error' in parsedClip) throw new ConversionError(parsedClip.error.replace(/\*/g, ''));
+
+  let link: FoundLink | undefined;
+  let input: Buffer;
+  let startOffset = 0;
+  let isImage = false;
+  let isGif = false;
+  let linkStart: number | undefined;
+  if (request.source.type === 'file') {
+    input = request.source.buffer;
+    isGif = request.source.mediaType === 'image/gif';
+    isImage = request.source.mediaType.startsWith('image/') && !isGif;
+  } else {
+    link = findLink(request.source.url);
+    if (!link) throw new LinkError('Informe um link público de YouTube, TikTok ou Instagram.');
+    linkStart = link.platform === 'youtube' ? youtubeStart(link.url) : undefined;
+    const clip = parsedClip ?? (linkStart ? { start: linkStart } : undefined);
+    const clipSeconds = Math.min(MAX_SECONDS, clip?.seconds ?? MAX_SECONDS);
+    const video = await linkDownload(link, MAX_INPUT_BYTES, { start: clip?.start ?? 0, seconds: clipSeconds });
+    input = video.buffer;
+    if (video.startApplied) startOffset = clip?.start ?? 0;
+  }
+
+  if (input.length > MAX_INPUT_BYTES) throw new ConversionError('O arquivo passa de 16 MB.');
+  if (isImage && parsedClip) throw new ConversionError('Não é possível escolher um trecho de uma imagem.');
+  const clip = parsedClip ?? (linkStart ? { start: linkStart } : undefined);
+  const clipSeconds = Math.min(MAX_SECONDS, clip?.seconds ?? MAX_SECONDS);
+  if (request.audio && (request.command !== 'som' || isImage))
+    throw new ConversionError('Use áudio separado com !som e uma base animada (vídeo ou GIF).');
+  let result = isImage
+    ? await createStaticSticker(input, request.fit, STICKER_META)
+    : await createAnimatedSticker(input, {
+      fit: request.fit,
+      meta: STICKER_META,
+      withAudio: request.command === 'som' && !request.audio,
+      startSeconds: (clip?.start ?? 0) - startOffset,
+      maxSeconds: clipSeconds,
+    });
+  if (request.audio) {
+    const prepared = await prepareAudio(request.audio.buffer, result.durationMs / 1000);
+    result = {
+      ...result,
+      hasAudio: true,
+      audio: prepared.audio,
+      audioDurationMs: prepared.durationMs,
+      audioSilent: prepared.silent,
+      audioError: undefined,
+    };
+  }
+  const archived = await archiveResult(request.command, result);
+  onArchived?.(archived);
+  const notices: string[] = [];
+  let withSound = false;
+
+  if (request.command === 'som') {
+    if (isImage) notices.push('Foto não tem som 🙂 Mandei uma figurinha comum.');
+    else {
+      const sound = await trySoundSticker(jid, { gif: isGif }, result);
+      withSound = sound.sent;
+      if (sound.notice) notices.push(sound.notice);
+    }
+  }
+  if (!isImage) {
+    const notice = clipNotice(result, startOffset, !!parsedClip);
+    if (notice) notices.push(notice);
+  }
+  if (!withSound) await sendPlainStickerTo(jid, result);
+  if (notices.length) {
+    await retryOnce(() => socket.sendMessage(jid, { text: notices.join('\n') }), 'Aviso da figurinha');
+  }
+
+  const sent = `O WhatsApp aceitou o envio da figurinha${withSound ? ' com som' : ''}; a entrega ao destinatário não foi confirmada.`;
+  if (!archived) return { message: `${sent}, mas o arquivamento falhou. Confira o terminal.` };
+  return {
+    archive: archived,
+    message: `${sent}. Arquivada em ${archived.stickerPath}${archived.audioPath ? ` e ${archived.audioPath}` : ''}.`,
+  };
+}
+
+function pruneWebJobs(): void {
+  if (webJobs.size < MAX_WEB_JOB_HISTORY) return;
+  for (const [id, job] of webJobs) {
+    if (job.status === 'done' || job.status === 'failed') webJobs.delete(id);
+    if (webJobs.size < MAX_WEB_JOB_HISTORY) return;
+  }
+}
+
+function submitWebJob(request: LocalWebRequest): { id: string; position: number } {
+  if (!connected || !socket?.user?.id) throw new LocalUiError(503, 'Conecte o bot ao WhatsApp antes de enviar.');
+  pruneWebJobs();
+  if (webJobs.size >= MAX_WEB_JOB_HISTORY) throw new LocalUiError(503, 'Há muitos pedidos recentes. Aguarde e tente de novo.');
+
+  const id = randomUUID();
+  const job: StoredWebJob = { status: 'queued', message: 'Aguardando na fila…', hasWebp: false, hasOgg: false };
+  const enqueued = queue.add(`web:${request.recipient}`, async () => {
+    job.status = 'processing';
+    job.message = 'Convertendo e enviando…';
+    try {
+      const result = await processWebRequest(request, archive => {
+        job.archive = archive;
+        job.hasWebp = !!archive?.stickerPath;
+        job.hasOgg = !!archive?.audioPath;
+      });
+      job.archive = result.archive;
+      job.hasWebp = !!result.archive?.stickerPath;
+      job.hasOgg = !!result.archive?.audioPath;
+      job.message = result.message;
+      job.status = 'done';
+    } catch (error) {
+      job.message = friendlyError(error);
+      job.status = 'failed';
+      throw error;
+    }
+  });
+  if (enqueued.status === 'full') throw new LocalUiError(429, 'A fila está cheia. Tente novamente em um minuto.');
+  if (enqueued.status === 'duplicate') throw new LocalUiError(409, 'Já existe um pedido web aguardando para esse número.');
+  webJobs.set(id, job);
+  return { id, position: enqueued.position };
+}
+
+function getWebJob(id: string): LocalWebJob | undefined {
+  const job = webJobs.get(id);
+  if (!job) return undefined;
+  return { status: job.status, message: job.message, hasWebp: job.hasWebp, hasOgg: job.hasOgg };
+}
+
+async function getWebFile(id: string, type: 'webp' | 'ogg'): Promise<Buffer | undefined> {
+  const archive = webJobs.get(id)?.archive;
+  const path = type === 'webp' ? archive?.stickerPath : archive?.audioPath;
+  if (!path) return undefined;
+  try { return await readFile(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
 }
 
 /** Aviso sobre o trecho usado ("Usei de 0:42 a 0:52."), quando não foi o vídeo inteiro desde o começo. */
@@ -154,6 +340,7 @@ function clipNotice(result: StickerResult, startOffset: number, explicit: boolea
 }
 
 async function handle(command: Command, text: string, message: WAMessage): Promise<void> {
+  const newsletter = message.key.remoteJid?.endsWith('@newsletter') ?? false;
   if (command === 'ajuda') { await reply(message, HELP_TEXT); return; }
   const media = findMedia(message);
   const link = media ? undefined : findMessageLink(message);
@@ -190,6 +377,7 @@ async function handle(command: Command, text: string, message: WAMessage): Promi
     }
     if (media?.kind === 'image') {
       const result = await createStaticSticker(input, fit, STICKER_META);
+      await archiveResult(command, result);
       await sendPlainSticker(message, result);
       if (command === 'som') await reply(message, 'Foto não tem som 🙂 Mandei uma figurinha comum.');
       await react(message, '✅');
@@ -198,24 +386,27 @@ async function handle(command: Command, text: string, message: WAMessage): Promi
     }
 
     const result = await createAnimatedSticker(input, {
-      fit, meta: STICKER_META, withAudio: command === 'som',
+      fit, meta: STICKER_META, withAudio: command === 'som' && !newsletter,
       startSeconds: (clip?.start ?? 0) - startOffset, maxSeconds: clipSeconds,
       onStep: DEBUG ? (step, ms) => steps.push(`${step} ${Math.round(ms)}ms`) : undefined,
     });
+    await archiveResult(command, result);
     const notices: string[] = [];
     const clipText = clipNotice(result, startOffset, !!parsedClip);
     if (clipText) notices.push(clipText);
 
     let withSound = false;
-    if (command === 'som') {
-      const sound = await trySoundSticker(message, { gif: media?.gif ?? false }, result);
+    if (command === 'som' && !newsletter) {
+      const sound = await trySoundSticker(message.key.remoteJid!, { gif: media?.gif ?? false }, result, message);
       withSound = sound.sent;
       if (sound.notice) notices.push(sound.notice);
     }
+    if (command === 'som' && newsletter) log('Canal detectado: publicando figurinha animada sem som.');
     if (!withSound) await sendPlainSticker(message, result);
     await react(message, withSound ? '🔊' : '✅');
     if (notices.length) await reply(message, notices.join('\n'));
-    log(`!${command}${link ? ` (link ${PLATFORM_NAME[link.platform]})` : ''} ${withSound ? 'com som' : 'sem som'} ok em ${((performance.now() - started) / 1000).toFixed(1)} s` +
+    const resultType = withSound ? 'com som' : newsletter && command === 'som' ? 'animada sem som (canal)' : 'sem som';
+    log(`!${command}${link ? ` (link ${PLATFORM_NAME[link.platform]})` : ''} ${resultType} ok em ${((performance.now() - started) / 1000).toFixed(1)} s` +
       ` (${Math.round(result.sticker.length / 1024)} KB)${steps.length ? ` — ${steps.join(', ')}` : ''}`);
   } catch (error) {
     logError(`!${command} falhou em ${((performance.now() - started) / 1000).toFixed(1)} s:`, error);
@@ -253,6 +444,10 @@ async function onMessage(message: WAMessage): Promise<void> {
 
 async function connect(): Promise<void> {
   await mkdir(AUTH_DIR, { recursive: true });
+  startQrPage(QR_PORT, {
+    open: process.env.ABRIR_QR === 'true',
+    handlers: { submit: submitWebJob, getJob: getWebJob, getFile: getWebFile },
+  });
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const current = makeWASocket({ auth: state, logger, markOnlineOnConnect: false, syncFullHistory: false });
   socket = current;
@@ -260,17 +455,19 @@ async function connect(): Promise<void> {
   current.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
     if (qr) {
       setQr(qr);
-      startQrPage(QR_PORT, { open: process.env.ABRIR_QR === 'true' });
       console.log('\nEscaneie o QR no WhatsApp: Configurações › Aparelhos conectados › Conectar um aparelho');
       console.log(`(ou abra http://localhost:${QR_PORT} para ver o QR como imagem)\n`);
       qrcode.generate(qr, { small: true });
     }
     if (connection === 'open') {
       reconnectAttempt = 0;
+      connected = true;
       markConnected();
       log(`Bot conectado. Comandos: !som, !fig, !ajuda. ${ALLOWED.size ? `Liberado para ${ALLOWED_LIST.length} número(s).` : 'Liberado para todos.'}`);
     }
     if (connection === 'close' && !stopping && socket === current) {
+      connected = false;
+      markDisconnected();
       const status = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
       if (status === DisconnectReason.loggedOut) {
         logError(`O celular desconectou o bot. Apague a pasta "${AUTH_DIR}" e rode de novo para gerar outro QR.`);
@@ -302,6 +499,9 @@ async function connect(): Promise<void> {
 async function shutdown(signal: string): Promise<void> {
   if (stopping) return;
   stopping = true;
+  connected = false;
+  markDisconnected();
+  stopQrPage();
   log(`${signal} recebido: terminando o pedido em andamento antes de sair...`);
   clearTimeout(reconnectTimer);
   await Promise.race([queue.idle(), wait(15_000)]);

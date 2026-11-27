@@ -58,7 +58,11 @@ class TooBigError extends Error {}
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
 type Candidate = { url: string; title?: string; headers?: Record<string, string> };
-type Source = { name: string; resolve: (link: string) => Promise<Candidate[]> };
+export type LinkDownloadSource = { name: string; resolve: (link: string) => Promise<Candidate[]> };
+export type YtDlpFallback = {
+  available: () => Promise<boolean>;
+  download: (link: string, maxBytes: number, clip?: LinkClip) => Promise<Buffer>;
+};
 
 function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -72,7 +76,7 @@ const nonEmpty = (urls: (string | undefined | null)[]) => urls.filter((u): u is 
 
 // ---------------------------------------------------------------- fontes por plataforma
 
-const SOURCES: Record<Platform, Source[]> = {
+const SOURCES: Record<Platform, LinkDownloadSource[]> = {
   tiktok: [
     {
       name: 'tiktok-api-dl v1',
@@ -196,14 +200,18 @@ export type LinkDownloadOptions = {
   /** Para figurinha: se o vídeo for grande, pega só este trecho em vez de recusar. */
   clip?: LinkClip;
   log?: (message: string) => void;
+  /** Adaptadores opcionais para testar ou substituir extratores sem acessar a rede real. */
+  sources?: readonly LinkDownloadSource[];
+  ytDlp?: YtDlpFallback;
 };
 
 export async function downloadFromLink(link: FoundLink, options: LinkDownloadOptions): Promise<LinkVideo> {
-  const { maxBytes, clip, log = () => {} } = options;
+  const { maxBytes, clip, log = () => {}, sources = SOURCES[link.platform] } = options;
+  const ytDlp = options.ytDlp ?? { available: hasYtDlp, download: viaYtDlp };
   let tooBig = false;
   let userError: LinkError | undefined;
 
-  for (const source of SOURCES[link.platform]) {
+  for (const source of sources) {
     let candidates: Candidate[];
     try {
       candidates = await withTimeout(source.resolve(link.url), 45_000, source.name);
@@ -231,17 +239,20 @@ export async function downloadFromLink(link: FoundLink, options: LinkDownloadOpt
     }
   }
 
-  if (userError) throw userError;
-  if (await hasYtDlp()) {
+  const ytDlpAvailable = await ytDlp.available();
+  if (ytDlpAvailable) {
     try {
-      return { buffer: await viaYtDlp(link.url, maxBytes, clip), platform: link.platform, trimmed: !!clip, startApplied: !!clip };
+      return { buffer: await ytDlp.download(link.url, maxBytes, clip), platform: link.platform, trimmed: !!clip, startApplied: !!clip };
     } catch (error) {
       if (error instanceof TooBigError) tooBig = true;
       else log(`yt-dlp falhou: ${error instanceof Error ? error.message : error}`);
     }
   }
 
+  if (userError) throw userError;
   if (tooBig) throw new ConversionError(`O vídeo passa de ${Math.round(maxBytes / 1024 / 1024)} MB.`);
+  if (link.platform === 'youtube' && !ytDlpAvailable)
+    throw new LinkError('O extrator do YouTube não conseguiu obter o vídeo. Instale o yt-dlp para habilitar a alternativa de download e tente novamente.');
   throw new LinkError(`Não consegui baixar esse vídeo do ${PLATFORM_NAME[link.platform]}. ` +
     (link.platform === 'instagram' ? 'Confira se o post é público (conta privada não dá).' : 'Confira se o link está certo e o vídeo é público.'));
 }

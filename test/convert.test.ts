@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createAnimatedSticker, createStaticSticker, MAX_ANIMATED_BYTES, MAX_STATIC_BYTES } from '../src/convert.js';
+import { createAnimatedSticker, createStaticSticker, MAX_ANIMATED_BYTES, MAX_STATIC_BYTES, prepareAudio } from '../src/convert.js';
 import { ConversionError, probe, runFull, withTempDir } from '../src/ffmpeg.js';
 import { syntheticImage, syntheticVideo } from './helpers.js';
 
@@ -77,6 +77,22 @@ test('faixa de áudio em silêncio é marcada como muda', async () => {
   const result = await createAnimatedSticker(await syntheticVideo(2, 'mudo'), { withAudio: true });
   assert.equal(result.hasAudio, true);
   assert.equal(result.audioSilent, true);
+});
+
+test('prepara áudio MP3 separado em Ogg/Opus até a duração escolhida', async () => {
+  const mp3 = await withTempDir(async dir => {
+    const path = join(dir, 'tom.mp3');
+    const { ffmpeg } = await import('../src/ffmpeg.js');
+    await ffmpeg(['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3',
+      '-c:a', 'libmp3lame', path]);
+    const { readFile } = await import('node:fs/promises');
+    return readFile(path);
+  });
+  const prepared = await prepareAudio(mp3, 1.5);
+  assert.equal(prepared.audio.toString('ascii', 0, 4), 'OggS');
+  assert.equal(prepared.silent, false);
+  assert.ok(prepared.durationMs <= 1500 && prepared.durationMs > 1400);
+  await assert.rejects(prepareAudio(Buffer.from('not an audio file')), ConversionError);
 });
 
 test('vídeo pesado (mais longo que 3 s, muito movimento) cabe em 500 KB e usa a estimativa', async () => {

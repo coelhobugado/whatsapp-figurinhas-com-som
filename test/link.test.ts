@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseCommand } from '../src/commands.js';
-import { findLink, youtubeId } from '../src/link-download.js';
+import { downloadFromLink, findLink, LinkError, youtubeId } from '../src/link-download.js';
 
 test('acha links de TikTok, Instagram e YouTube no meio do texto', () => {
   assert.deepEqual(findLink('!som https://vm.tiktok.com/ZMabc123/'), { url: 'https://vm.tiktok.com/ZMabc123/', platform: 'tiktok' });
@@ -42,4 +42,32 @@ test('tempo de início que vem no link do YouTube', async () => {
   assert.equal(youtubeStart('https://www.youtube.com/watch?v=jNQXAC9IVRw&t=90s'), 90);
   assert.equal(youtubeStart('https://www.youtube.com/embed/jNQXAC9IVRw?start=12'), 12);
   assert.equal(youtubeStart('https://youtu.be/jNQXAC9IVRw?si=abc'), undefined);
+});
+
+test('tenta yt-dlp antes de devolver erro específico do extrator principal', async () => {
+  let fallbackCalled = false;
+  const result = await downloadFromLink(
+    { url: 'https://youtu.be/jNQXAC9IVRw', platform: 'youtube' },
+    {
+      maxBytes: 1024,
+      sources: [{ name: 'extrator primário', resolve: async () => { throw new LinkError('formato primário indisponível'); } }],
+      ytDlp: {
+        available: async () => true,
+        download: async () => { fallbackCalled = true; return Buffer.from('video fallback'); },
+      },
+    },
+  );
+  assert.equal(fallbackCalled, true);
+  assert.equal(result.buffer.toString(), 'video fallback');
+});
+
+test('retorna erro específico do extrator se yt-dlp não estiver instalado', async () => {
+  await assert.rejects(downloadFromLink(
+    { url: 'https://youtu.be/jNQXAC9IVRw', platform: 'youtube' },
+    {
+      maxBytes: 1024,
+      sources: [{ name: 'extrator primário', resolve: async () => { throw new LinkError('vídeo privado'); } }],
+      ytDlp: { available: async () => false, download: async () => Buffer.alloc(0) },
+    },
+  ), /vídeo privado/);
 });
