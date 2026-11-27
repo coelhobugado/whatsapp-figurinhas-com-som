@@ -84,7 +84,7 @@ Pronto: mande um vídeo com a legenda `!som` para o número do bot.
 
 | Variável | Padrão | Para quê |
 |---|---|---|
-| `ALLOWED_NUMBERS` | vazio (todos) | Números que podem usar o bot (só dígitos, com DDI e DDD, separados por vírgula). Ex.: `5511999998888`. |
+| `ALLOWED_NUMBERS` | vazio (todos) | Números que podem usar o bot (só dígitos, com DDI e DDD, separados por vírgula). Ex.: `5511999998888`. Número brasileiro sem o 55, ou com/sem o 9 da frente, também é reconhecido. |
 | `STICKER_PACK_NAME` | `Criada por Dexter` | Nome que aparece ao tocar na figurinha. |
 | `STICKER_PUBLISHER` | vazio | Autor mostrado ao lado do nome. |
 | `AUTH_DIR` | `./sessao` | Onde a sessão do WhatsApp é salva. |

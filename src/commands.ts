@@ -22,6 +22,24 @@ export const HELP_TEXT = [
   'Limites: usa os primeiros 10 segundos, arquivo de até 16 MB. Vídeos mandados como documento também valem.',
 ].join('\n');
 
+/**
+ * Formas aceitas de um número do `ALLOWED_NUMBERS`. Brasil: completa o 55 quando falta (DDD + número)
+ * e aceita o celular com e sem o 9 da frente, porque o WhatsApp guarda muitos números antigos sem ele.
+ */
+export function phoneVariants(raw: string): string[] {
+  const original = raw.replace(/\D/g, '');
+  if (!original) return [];
+  const looksBrazilian = (original.length === 11 && original[2] === '9') || (original.length === 10 && /^[1-9]{2}[2-9]/.test(original));
+  const digits = looksBrazilian ? `55${original}` : original;
+  const variants = new Set([digits, original]);
+  if (digits.startsWith('55')) {
+    const ddd = digits.slice(2, 4), local = digits.slice(4);
+    if (local.length === 9 && local.startsWith('9')) variants.add(`55${ddd}${local.slice(1)}`);
+    if (local.length === 8 && /^[6-9]/.test(local)) variants.add(`55${ddd}9${local}`);
+  }
+  return [...variants];
+}
+
 /** Texto ou legenda da mensagem, já sem os embrulhos (temporária, visualização única etc.). */
 export function messageText(content: proto.IMessage | undefined): string {
   return (content?.conversation ?? content?.extendedTextMessage?.text ?? content?.imageMessage?.caption
