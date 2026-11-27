@@ -82,7 +82,7 @@ Para desligar: `Ctrl + C` no terminal. Nas próximas vezes basta `npm start` (a 
 | Pedido do usuário | O que mudar no `.env` |
 |---|---|
 | "Quero mudar o nome que aparece na figurinha" | `STICKER_PACK_NAME=Meu Nome` (e opcional `STICKER_PUBLISHER=`) |
-| "Só eu / só meus amigos podem usar" | `ALLOWED_NUMBERS=5511999998888,5521988887777` (só dígitos, com 55 + DDD) |
+| "Só eu / só meus amigos podem usar" | `ALLOWED_NUMBERS=5511999998888,5521988887777` (só dígitos, com 55 + DDD; número brasileiro sem o 55 ou com/sem o 9 também é reconhecido, via `phoneVariants` em `src/commands.ts`). Com `DEBUG=true`, o log mostra por que alguém foi recusado |
 | "A porta 3999 está ocupada" | `QR_PORT=4000` |
 | "O FFmpeg não é encontrado" | `FFMPEG_PATH=` e `FFPROBE_PATH=` com o caminho completo do executável |
 | "Quero ver o que está acontecendo" | `DEBUG=true` |

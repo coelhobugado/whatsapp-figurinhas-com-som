@@ -1,7 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { WAMessage } from '@whiskeysockets/baileys';
-import { findMedia, messageText, parseCommand } from '../src/commands.js';
+import { findMedia, messageText, parseCommand, phoneVariants } from '../src/commands.js';
+
+test('ALLOWED_NUMBERS aceita número sem 55 e com ou sem o 9 da frente', () => {
+  assert.deepEqual(phoneVariants('85 99999-8888'), ['5585999998888', '85999998888', '558599998888']);
+  assert.deepEqual(phoneVariants('5511999998888'), ['5511999998888', '551199998888']);
+  assert.deepEqual(phoneVariants('558599998888'), ['558599998888', '5585999998888']);
+  assert.deepEqual(phoneVariants('551133334444'), ['551133334444']);
+  assert.deepEqual(phoneVariants('14155550100'), ['14155550100']);
+  assert.deepEqual(phoneVariants(''), []);
+});
 
 test('reconhece comandos e apelidos, ignorando maiúsculas', () => {
   assert.equal(parseCommand('!SOM'), 'som');

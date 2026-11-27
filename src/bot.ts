@@ -5,7 +5,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
-import { findMedia, findMessageLink, formatTime, HELP_TEXT, messageText, parseClip, parseCommand, parseFit, type Command } from './commands.js';
+import { findMedia, findMessageLink, formatTime, HELP_TEXT, messageText, parseClip, parseCommand, parseFit, phoneVariants, type Command } from './commands.js';
 import { createAnimatedSticker, createStaticSticker, MAX_INPUT_BYTES, MAX_SECONDS, type StickerResult } from './convert.js';
 import { checkTools, ConversionError, ToolError } from './ffmpeg.js';
 import { downloadFromLink, LinkError, PLATFORM_NAME, youtubeStart, type FoundLink, type LinkClip } from './link-download.js';
@@ -17,10 +17,11 @@ import { sendSoundSticker } from './sound-sticker.js';
 const AUTH_DIR = process.env.AUTH_DIR || './sessao';
 const QR_PORT = Number(process.env.QR_PORT || 3999);
 /** Números (DDI+DDD+número, só dígitos) que podem usar o bot. Vazio = qualquer pessoa. */
-const ALLOWED = new Set((process.env.ALLOWED_NUMBERS ?? '').split(/[,;\s]+/).map(n => n.replace(/\D/g, '')).filter(Boolean));
+const ALLOWED_LIST = (process.env.ALLOWED_NUMBERS ?? '').split(/[,;\s]+/).filter(n => /\d/.test(n));
+const ALLOWED = new Set(ALLOWED_LIST.flatMap(phoneVariants));
 /** Nome mostrado ao tocar na figurinha (metadados EXIF). */
 const STICKER_META = { packName: process.env.STICKER_PACK_NAME ?? 'Criada por Dexter', publisher: process.env.STICKER_PUBLISHER ?? '' };
-/** DEBUG=true registra a chegada de cada mensagem e o tempo das etapas (sem conteúdo nem números). */
+/** DEBUG=true registra a chegada de cada mensagem e o tempo das etapas (sem conteúdo; de números, só os 4 últimos dígitos de quem foi recusado). */
 const DEBUG = process.env.DEBUG === 'true';
 const MAX_PENDING = Number(process.env.MAX_PENDING || 5);
 const MAX_AGE_SECONDS = 5 * 60;
@@ -64,7 +65,9 @@ async function senderPhone(message: WAMessage): Promise<string | undefined> {
 async function allowed(message: WAMessage): Promise<boolean> {
   if (message.key.fromMe || !ALLOWED.size) return true;
   const phone = await senderPhone(message);
-  return !!phone && ALLOWED.has(phone);
+  const ok = !!phone && ALLOWED.has(phone);
+  if (!ok && DEBUG) log(`[recusado] remetente ${phone ? `…${phone.slice(-4)} (${phone.length} dígitos) não está em ALLOWED_NUMBERS` : 'sem número conhecido (só @lid, sem mapa para telefone)'}`);
+  return ok;
 }
 
 async function reply(message: WAMessage, text: string): Promise<void> {
@@ -265,7 +268,7 @@ async function connect(): Promise<void> {
     if (connection === 'open') {
       reconnectAttempt = 0;
       markConnected();
-      log(`Bot conectado. Comandos: !som, !fig, !ajuda. ${ALLOWED.size ? `Liberado para ${ALLOWED.size} número(s).` : 'Liberado para todos.'}`);
+      log(`Bot conectado. Comandos: !som, !fig, !ajuda. ${ALLOWED.size ? `Liberado para ${ALLOWED_LIST.length} número(s).` : 'Liberado para todos.'}`);
     }
     if (connection === 'close' && !stopping && socket === current) {
       const status = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
