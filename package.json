@@ -26,11 +26,14 @@
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
+    "@tobyg74/tiktok-api-dl": "1.3.7",
     "@whiskeysockets/baileys": "7.0.0-rc14",
+    "instagram-url-direct": "2.0.7",
     "pino": "10.4.0",
     "qrcode": "1.5.4",
     "qrcode-terminal": "0.12.0",
-    "tsx": "4.23.15"
+    "tsx": "4.23.15",
+    "youtubei.js": "18.3.0"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

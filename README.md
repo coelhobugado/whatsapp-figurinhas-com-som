@@ -39,7 +39,7 @@ Ele roda no seu computador ou servidor, conectado a um número de WhatsApp como 
 - 🏷️ **Nome do pacote personalizado** ("Criada por …") gravado na figurinha.
 - 🛟 **Nunca deixa ninguém sem resposta**: se o som falhar, manda a versão sem som e explica o motivo (vídeo sem áudio, áudio mudo, recusa do WhatsApp…).
 - 🧵 **Fila justa**: um pedido por pessoa de cada vez, posição na fila e limite de tempo por pedido.
-- 🔒 **Privado**: nenhum vídeo passa por serviço de terceiros; a conversão é local, com FFmpeg.
+- 🔒 **Privado**: nenhum vídeo passa por serviço de terceiros; links são baixados direto da plataforma e a conversão é local, com FFmpeg.
 - 🙂 Também faz figurinhas comuns (sem som) de foto, vídeo e GIF.
 
 ## Comandos
@@ -50,6 +50,7 @@ Ele roda no seu computador ou servidor, conectado a um número de WhatsApp como 
 | `!fig` (ou `!f`, `!s`) | Figurinha comum, sem som, de foto, vídeo ou GIF. |
 | `!ajuda` | Lista os comandos. |
 
+- **Link no lugar do vídeo**: `!som <link>` e `!fig <link>` aceitam links de TikTok, Instagram e YouTube (ou responda a uma mensagem com o link). Vídeos grandes têm só os primeiros 10 s baixados.
 - `!som inteiro` / `!fig inteiro`: mantém a imagem toda (bordas transparentes) em vez de cortar.
 - Reações do bot: ⏳ processando · 🔊 saiu com som · ✅ saiu sem som · ❌ erro.
 - Limites: usa os primeiros **10 segundos** do vídeo; arquivo de até **16 MB**.
@@ -90,6 +91,7 @@ Pronto: mande um vídeo com a legenda `!som` para o número do bot.
 | `QR_PORT` | `3999` | Porta da página local do QR. |
 | `MAX_PENDING` | `5` | Quantos pedidos podem esperar na fila. |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | PATH | Caminho do FFmpeg, se não estiver no PATH. |
+| `YTDLP_PATH` | PATH | `yt-dlp` opcional, usado como reserva se as bibliotecas JS falharem. |
 | `DEBUG` | `false` | Mostra cada mensagem recebida e o tempo de cada etapa (sem conteúdo nem números). |
 | `LOG_LEVEL` | `silent` | Logs internos do Baileys. |
 
@@ -147,6 +149,7 @@ O campo 134 e o `StickerMessage.26` não existem no protobuf do [Baileys](https:
 | [`src/convert.ts`](src/convert.ts) | Vídeo → WebP animado + áudio, com a estimativa de tamanho |
 | [`src/sound-sticker.ts`](src/sound-sticker.ts) | Monta e envia a figurinha com som |
 | [`src/webp.ts`](src/webp.ts) | Lê o WebP e grava o nome do pacote (EXIF) |
+| [`src/link-download.ts`](src/link-download.ts) | Baixa vídeos de TikTok/Instagram/YouTube pelo link, com fontes de reserva |
 | [`src/commands.ts`](src/commands.ts) | Comandos e localização da mídia (inclusive citada) |
 | [`src/queue.ts`](src/queue.ts) | Fila com limite por pessoa e tempo máximo |
 | [`src/qr-page.ts`](src/qr-page.ts) | Página local com o QR de vinculação |

@@ -5,3 +5,4 @@ sessao/
 saida/
 *.log
 .claude/
+.DS_Store
