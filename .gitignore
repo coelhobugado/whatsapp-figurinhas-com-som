@@ -6,4 +6,3 @@ saida/
 *.log
 .claude/
 .DS_Store
-AGENTS.md
