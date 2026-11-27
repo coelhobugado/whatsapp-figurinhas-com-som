@@ -43,3 +43,23 @@ test('vídeo mandado como documento (com legenda) também vale', () => {
   const pdf = { key: { id: 'E' }, message: { documentMessage: { mimetype: 'application/pdf' } } } as WAMessage;
   assert.equal(findMedia(pdf), undefined);
 });
+
+test('trecho: lê início e intervalo em vários formatos', async () => {
+  const { parseClip, parseTime, formatTime } = await import('../src/commands.js');
+  assert.equal(parseTime('42'), 42);
+  assert.equal(parseTime('42s'), 42);
+  assert.equal(parseTime('0:42'), 42);
+  assert.equal(parseTime('1:02:03'), 3723);
+  assert.equal(parseTime('0:42.5'), 42.5);
+  assert.equal(parseTime('0:75'), undefined);
+  assert.equal(parseTime('abc'), undefined);
+  assert.deepEqual(parseClip('!som 0:42 https://youtu.be/x'), { start: 42 });
+  assert.deepEqual(parseClip('!som https://youtu.be/x 1:00-1:06'), { start: 60, seconds: 6 });
+  assert.deepEqual(parseClip('!som inteiro 0:10'), { start: 10 });
+  assert.equal(parseClip('!som https://youtu.be/x'), undefined);
+  assert.equal(parseClip('!som inteiro'), undefined);
+  assert.ok('error' in (parseClip('!som 0:50-0:40') as object));
+  assert.ok('error' in (parseClip('!som 9:99') as object));
+  assert.equal(formatTime(42), '0:42');
+  assert.equal(formatTime(3723), '1:02:03');
+});

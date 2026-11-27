@@ -33,6 +33,17 @@ O usuário típico **não é programador**. Ele quer o bot funcionando e talvez 
 
 ## 3. Roteiro de instalação para guiar o usuário
 
+**Caminho mais fácil (recomende primeiro):**
+
+- **Windows:** baixar o ZIP do GitHub (**Code › Download ZIP**), extrair e dar dois cliques em `INICIAR-WINDOWS.bat`.
+  Ele instala Node.js e FFmpeg pelo `winget` se faltarem, roda `npm ci`, cria o `.env` (perguntando o nome das figurinhas)
+  e liga o bot abrindo o QR no navegador. Se o Windows mostrar "O Windows protegeu o computador":
+  **Mais informações › Executar assim mesmo**. Se disser que não achou o FFmpeg logo após instalar: fechar e abrir de novo.
+- **macOS/Linux:** `bash iniciar-mac-linux.sh` na pasta do projeto (usa Homebrew/apt quando possível).
+- Os dois aceitam um modo de teste que prepara tudo sem ligar o bot: `scripts/iniciar.ps1 -SoPreparar` / `bash iniciar-mac-linux.sh --so-preparar`.
+
+**Caminho manual (se o fácil falhar):**
+
 1. **Instalar Node.js 22.12 ou mais novo** — https://nodejs.org (versão LTS). Conferir: `node -v`.
 2. **Instalar FFmpeg** (precisa ter `libwebp`, `libopus`, `libx264`; o bot confere ao iniciar):
    - Windows: `winget install Gyan.FFmpeg` (depois **fechar e abrir o terminal** de novo)
@@ -59,7 +70,11 @@ Para desligar: `Ctrl + C` no terminal. Nas próximas vezes basta `npm start` (a 
 
 - Funciona mandando a mídia **com a legenda** ou **respondendo** a uma mídia/link com o comando.
 - `inteiro` depois do comando (`!som inteiro`) mantém a imagem toda com bordas transparentes; o padrão corta o centro.
-- Limites: primeiros **10 s** do vídeo, arquivo de até **16 MB**.
+- **Trecho:** `!som 0:42 <link>` começa no 0:42 e usa até 10 s; `!som 0:42-0:47` usa só esse pedaço. Vale para link e para vídeo
+  enviado. Formatos: `42`, `42s`, `0:42`, `1:02:03`. Link do YouTube com `?t=42` já começa ali. Por link, só o trecho é baixado
+  quando o vídeo é grande (funciona com vídeos de horas). Código: `parseClip` em `src/commands.ts`, `startSeconds`/`maxSeconds`
+  em `src/convert.ts`, `fetchClip` em `src/link-download.ts`.
+- Limites: até **10 s** por figurinha; vídeo enviado de até **16 MB**.
 - Reações do bot: ⏳ processando · 🔊 saiu com som · ✅ saiu sem som · ❌ erro.
 
 ## 5. Configuração (`.env`) — mudanças que o usuário mais pede
@@ -86,10 +101,12 @@ Vazio em `ALLOWED_NUMBERS` = **qualquer pessoa** pode usar. O próprio número d
 | `src/ffmpeg.ts` | Roda FFmpeg/ffprobe sem shell, `checkTools()`, `ConversionError` (mensagem para usuário) vs `ToolError` (só log) |
 | `src/sound-sticker.ts` | Monta e envia a figurinha com som (campos de protobuf não oficiais, patch em `proto.Message.encode`) |
 | `src/webp.ts` | Lê WebP e grava o nome do pacote (EXIF) |
-| `src/link-download.ts` | Pega o vídeo de links do TikTok/Instagram/YouTube para `!som`/`!fig`, com fontes de reserva (+ `yt-dlp` opcional). Só bibliotecas que falam direto com a plataforma (nada de API de terceiros) e FFmpeg limitado a HTTPS |
+| `src/link-download.ts` | Pega o vídeo de links do TikTok/Instagram/YouTube para `!som`/`!fig`, com fontes de reserva (+ `yt-dlp` opcional). Bibliotecas que falam com a plataforma (exceção: a fonte de reserva `tiktok-api-dl v2` usa o site SSSTik) e FFmpeg limitado a HTTPS. Busca só o trecho pedido (`fetchClip`) quando o vídeo é grande |
 | `src/queue.ts` | Fila: um pedido por vez, um por pessoa, limite total, timeout de 3 min |
 | `src/qr-page.ts` | Página local com o QR |
-| `src/cli.ts` | `npm run converter -- video.mp4` — testa a conversão sem WhatsApp, grava em `saida/` |
+| `src/cli.ts` | `npm run converter -- video.mp4 [--trecho 0:42-0:47]` — testa a conversão sem WhatsApp, grava em `saida/` |
+| `INICIAR-WINDOWS.bat` + `scripts/iniciar.ps1` | Instalador/inicializador de 1 clique no Windows (winget, npm ci, .env, abre o QR) |
+| `iniciar-mac-linux.sh` | O mesmo para macOS/Linux |
 | `scripts/bench.ts` | `npm run bench -- video.mp4` — mede tempo de cada etapa |
 | `test/*.test.ts` | Testes (`node --test`), usam FFmpeg de verdade |
 
@@ -137,7 +154,7 @@ Vazio em `ALLOWED_NUMBERS` = **qualquer pessoa** pode usar. O próprio número d
 
 ```bash
 npm start                                  # roda o bot
-npm run converter -- video.mp4 [--inteiro] # converte sem WhatsApp (saída em saida/)
+npm run converter -- video.mp4 [--inteiro] [--trecho 0:42-0:47] # converte sem WhatsApp (saída em saida/)
 npm run bench -- video.mp4                 # mede desempenho
 npm run typecheck                          # só tipos
 npm test                                   # só testes

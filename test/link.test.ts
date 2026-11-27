@@ -34,3 +34,12 @@ test('!som e !fig aceitam link; !baixar não existe', () => {
   assert.equal(parseCommand('!fig https://youtu.be/x'), 'figurinha');
   assert.equal(parseCommand('!baixar https://youtu.be/x'), undefined);
 });
+
+test('tempo de início que vem no link do YouTube', async () => {
+  const { youtubeStart } = await import('../src/link-download.js');
+  assert.equal(youtubeStart('https://youtu.be/jNQXAC9IVRw?t=42'), 42);
+  assert.equal(youtubeStart('https://www.youtube.com/watch?v=jNQXAC9IVRw&t=1m5s'), 65);
+  assert.equal(youtubeStart('https://www.youtube.com/watch?v=jNQXAC9IVRw&t=90s'), 90);
+  assert.equal(youtubeStart('https://www.youtube.com/embed/jNQXAC9IVRw?start=12'), 12);
+  assert.equal(youtubeStart('https://youtu.be/jNQXAC9IVRw?si=abc'), undefined);
+});

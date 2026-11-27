@@ -112,3 +112,28 @@ test('foto vira figurinha estática 512×512 até 100 KB', async () => {
     assert.equal(info.height, 512);
   });
 });
+
+test('trecho: começa no ponto pedido e respeita a duração', async () => {
+  // 20 s de vídeo; tom de 440 Hz só nos primeiros 10 s, silêncio depois.
+  const video = await withTempDir(async dir => {
+    const out = join(dir, 'tom-depois-silencio.mp4');
+    const { ffmpeg } = await import('../src/ffmpeg.js');
+    await ffmpeg(['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x120:rate=12:duration=20',
+      '-f', 'lavfi', '-i', "aevalsrc='if(lt(t,10),sin(2*PI*440*t),0)':s=44100:d=20",
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', out]);
+    const { readFile } = await import('node:fs/promises');
+    return readFile(out);
+  });
+  const inicio = await createAnimatedSticker(video, { withAudio: true, startSeconds: 2, maxSeconds: 3 });
+  assert.equal(inicio.audioSilent, false);
+  assert.ok(Math.abs(inicio.durationMs - 3000) < 200, `duração ${inicio.durationMs}`);
+  assert.equal(inicio.startSeconds, 2);
+  assert.equal(inicio.trimmed, true);
+
+  const fim = await createAnimatedSticker(video, { withAudio: true, startSeconds: 15 });
+  assert.equal(fim.audioSilent, true, 'depois dos 10 s o áudio é mudo: o pulo funcionou');
+  assert.ok(Math.abs(fim.durationMs - 5000) < 250, `duração ${fim.durationMs} (só sobram 5 s)`);
+  assert.equal(fim.trimmed, false);
+
+  await assert.rejects(createAnimatedSticker(video, { startSeconds: 25 }), /tem só 0:20/);
+});

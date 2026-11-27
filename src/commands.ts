@@ -18,9 +18,48 @@ export const HELP_TEXT = [
   '*!ajuda* — mostra esta mensagem.',
   '',
   'No lugar do vídeo, dá para mandar o link: *!som <link>* ou *!fig <link>* (TikTok, Instagram ou YouTube).',
+  '',
+  '⏱️ *Escolha o trecho:* *!som 0:42 <link>* começa no 0:42 e usa até 10 s. *!som 0:42-0:47 <link>* usa só esse pedaço. Vale também com vídeo enviado. No YouTube, link com tempo (?t=42) já começa nesse ponto.',
+  '',
   'A figurinha preenche o quadrado cortando as sobras. Para manter a imagem inteira, use *!som inteiro* ou *!fig inteiro*.',
-  'Limites: usa os primeiros 10 segundos, arquivo de até 16 MB. Vídeos mandados como documento também valem.',
+  'Limites: até 10 segundos por figurinha, arquivo de até 16 MB. Vídeos mandados como documento também valem.',
 ].join('\n');
+
+/** Trecho escolhido do vídeo, em segundos. */
+export type Clip = { start: number; seconds?: number };
+
+/** "42", "42s", "0:42", "1:02:03", "0:42.5" → segundos. */
+export function parseTime(token: string): number | undefined {
+  const t = token.trim().toLowerCase();
+  if (/^\d+(?:[.,]\d+)?s?$/.test(t)) return Number(t.replace(/s$/, '').replace(',', '.'));
+  if (!/^\d{1,2}(?::\d{1,2}){1,2}(?:[.,]\d+)?$/.test(t)) return undefined;
+  const parts = t.replace(',', '.').split(':').map(Number);
+  if (parts.slice(1).some(p => p >= 60)) return undefined;
+  return parts.reduce((total, part) => total * 60 + part, 0);
+}
+
+export function formatTime(seconds: number): string {
+  const s = Math.round(seconds);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}` : `${m}:${String(r).padStart(2, '0')}`;
+}
+
+/**
+ * Lê o trecho pedido depois do comando: "0:42" (início) ou "0:42-0:47" (início e fim).
+ * Ignora links e o "inteiro". Devolve uma mensagem de erro se o tempo estiver errado.
+ */
+export function parseClip(text: string): Clip | { error: string } | undefined {
+  const tokens = text.split(/\s+/).slice(1).filter(t => t && !/^https?:\/\//i.test(t) && !/^!?inteiro$/i.test(t));
+  const timeLike = tokens.find(t => /^\d[\d:.,s]*(?:-\d[\d:.,s]*)?$/i.test(t));
+  if (!timeLike) return undefined;
+  const [from, to] = timeLike.split('-');
+  const start = parseTime(from!);
+  if (start === undefined) return { error: `Não entendi o tempo "${timeLike}". Use assim: *!som 0:42* ou *!som 0:42-0:47*.` };
+  if (to === undefined) return { start };
+  const end = parseTime(to);
+  if (end === undefined || end <= start) return { error: `O fim do trecho precisa vir depois do começo. Ex.: *!som 0:42-0:47*.` };
+  return { start, seconds: end - start };
+}
 
 /** Texto ou legenda da mensagem, já sem os embrulhos (temporária, visualização única etc.). */
 export function messageText(content: proto.IMessage | undefined): string {

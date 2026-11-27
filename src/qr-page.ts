@@ -3,6 +3,7 @@
  * Mais fácil de escanear do que o QR desenhado com caracteres no terminal.
  */
 import { createServer, type Server } from 'node:http';
+import { spawn } from 'node:child_process';
 import QRCode from 'qrcode';
 
 type State = { qr?: string; connected: boolean };
@@ -36,7 +37,18 @@ async function tick(){
 tick();
 </script></body></html>`;
 
-export function startQrPage(port: number): void {
+let opened = false;
+/** Abre a página no navegador padrão (uma vez só). Usado pelo instalador de 1 clique. */
+function openInBrowser(url: string): void {
+  if (opened) return;
+  opened = true;
+  const [cmd, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+    : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+  try { spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true }).on('error', () => {}).unref(); } catch { /* sem navegador: o QR continua no terminal */ }
+}
+
+export function startQrPage(port: number, options: { open?: boolean } = {}): void {
+  if (options.open && !server) setTimeout(() => openInBrowser(`http://localhost:${port}`), 800);
   if (server) return;
   server = createServer(async (req, res) => {
     if (req.url === '/estado') {

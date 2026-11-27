@@ -28,6 +28,10 @@ export type StickerOptions = {
   meta?: StickerMetadata;
   /** Também extrai o áudio (em paralelo com a imagem). */
   withAudio?: boolean;
+  /** Começa neste segundo do vídeo (padrão 0). */
+  startSeconds?: number;
+  /** Duração desejada (no máximo 10 s). */
+  maxSeconds?: number;
   /** Recebe o tempo de cada etapa, para medir desempenho. */
   onStep?: (step: string, ms: number) => void;
 };
@@ -38,6 +42,9 @@ export type StickerResult = {
   durationMs: number;
   /** O vídeo era mais longo que 10 s e só o começo foi usado. */
   trimmed: boolean;
+  /** Trecho usado, em segundos do vídeo de origem. */
+  startSeconds?: number;
+  clipSeconds?: number;
   /** O arquivo de origem tem uma faixa de áudio. */
   hasAudio: boolean;
   /** Áudio Ogg/Opus pronto, quando `withAudio` foi pedido e deu certo. */
@@ -59,6 +66,19 @@ const LADDER: readonly (readonly [number, number, number])[] = [
 
 function withMetadata(webp: Buffer, meta?: StickerMetadata): Buffer {
   return meta?.packName || meta?.publisher ? addStickerMetadata(webp, meta) : webp;
+}
+
+/**
+ * Pulo até o início do trecho. Antes do -i, o FFmpeg pula direto para perto do ponto e decodifica
+ * só a partir dali: rápido e preciso no quadro (porque o vídeo é recodificado depois).
+ */
+function seekArgs(start: number): string[] {
+  return start > 0 ? ['-ss', start.toFixed(3)] : [];
+}
+
+function formatSeconds(seconds: number): string {
+  const s = Math.floor(seconds);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
 function checkInput(input: Buffer): void {
@@ -102,9 +122,9 @@ async function encodeWebp(source: string, output: string, filter: string, qualit
  * Extrai o áudio do trecho usado: Ogg/Opus mono 48 kHz (o formato das mensagens de voz, que
  * toca em todos os aparelhos), com um fade curto nas pontas para não estalar quando repete.
  */
-async function extractAudio(source: string, seconds: number, output: string): Promise<{ audio: Buffer; silent: boolean }> {
+async function extractAudio(source: string, start: number, seconds: number, output: string): Promise<{ audio: Buffer; silent: boolean }> {
   const fadeOut = Math.max(0, seconds - 0.12).toFixed(3);
-  const { stderr } = await ffmpeg(['-loglevel', 'info', '-t', seconds.toFixed(3), '-i', source,
+  const { stderr } = await ffmpeg(['-loglevel', 'info', ...seekArgs(start), '-t', seconds.toFixed(3), '-i', source,
     '-map', '0:a:0', '-vn', '-sn', '-dn', '-ac', '1', '-ar', '48000',
     '-af', `afade=t=in:d=0.02,afade=t=out:st=${fadeOut}:d=0.12,volumedetect`,
     '-c:a', 'libopus', '-b:a', '64k', '-application', 'audio', '-map_metadata', '-1', '-f', 'ogg', output], 60_000);
@@ -162,19 +182,24 @@ export async function createAnimatedSticker(input: Buffer, options: StickerOptio
     await writeFile(source, input);
     const info = await timed('analisar', () => probe(source));
     if (!info.hasVideo) throw new ConversionError('Não encontrei vídeo nesse arquivo.');
-    const seconds = Math.min(MAX_SECONDS, info.durationSec ?? MAX_SECONDS);
-    if (seconds < 0.2) throw new ConversionError('O vídeo é curto demais (mínimo 0,2 s).');
+    const start = Math.max(0, options.startSeconds ?? 0);
+    const total = info.durationSec;
+    if (total !== undefined && start > 0 && start > total - 0.2)
+      throw new ConversionError(`O vídeo tem só ${formatSeconds(total)}. Escolha um início antes disso.`);
+    const wanted = Math.min(MAX_SECONDS, options.maxSeconds ?? MAX_SECONDS);
+    const seconds = Math.min(wanted, (total ?? start + wanted) - start);
+    if (seconds < 0.2) throw new ConversionError('O trecho é curto demais (mínimo 0,2 s).');
 
     // Áudio em paralelo com todo o trabalho de imagem. Falha no áudio não derruba a figurinha.
     const audioTask = options.withAudio && info.hasAudio
-      ? timed('áudio', () => extractAudio(source, seconds, join(dir, 'audio.ogg'))).then(
+      ? timed('áudio', () => extractAudio(source, start, seconds, join(dir, 'audio.ogg'))).then(
         result => ({ ...result, error: undefined }),
         (error: Error) => ({ audio: undefined, silent: false, error }))
       : undefined;
 
-    // 1. Intermediário: enquadrado em 512, no máximo 15 quadros/s, só os primeiros 10 s.
+    // 1. Intermediário: enquadrado em 512, no máximo 15 quadros/s, só o trecho escolhido (até 10 s).
     const baseFps = Math.min(15, Math.round(info.fps ?? 15)) || 15;
-    await timed('decodificar', () => ffmpeg(['-loglevel', 'error', '-t', seconds.toFixed(3), '-i', source,
+    await timed('decodificar', () => ffmpeg(['-loglevel', 'error', ...seekArgs(start), '-t', seconds.toFixed(3), '-i', source,
       '-map', '0:v:0', '-an', '-sn', '-dn', '-vf', framingFilter(fit, baseFps),
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '10', '-pix_fmt', 'yuv444p', base], 120_000)
       .catch((error: unknown) => {
@@ -224,7 +249,8 @@ export async function createAnimatedSticker(input: Buffer, options: StickerOptio
     const audio = await audioTask;
     return {
       sticker, animated: true, durationMs: webp.durationMs,
-      trimmed: (info.durationSec ?? 0) > MAX_SECONDS + 0.05, hasAudio: info.hasAudio,
+      trimmed: (total ?? 0) > start + seconds + 0.05, hasAudio: info.hasAudio,
+      startSeconds: start, clipSeconds: seconds,
       audio: audio?.audio, audioSilent: audio?.silent, audioError: audio?.error,
     };
   });

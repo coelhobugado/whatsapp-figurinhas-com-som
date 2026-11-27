@@ -13,7 +13,10 @@ import { ConversionError, ffmpeg, withTempDir } from './ffmpeg.js';
 
 export type Platform = 'tiktok' | 'instagram' | 'youtube';
 export type FoundLink = { url: string; platform: Platform };
-export type LinkVideo = { buffer: Buffer; platform: Platform; title?: string; trimmed: boolean };
+/** `startApplied`: o arquivo já começa no início pedido (foi cortado na origem), então a conversão não deve pular de novo. */
+export type LinkVideo = { buffer: Buffer; platform: Platform; title?: string; trimmed: boolean; startApplied: boolean };
+/** Trecho a buscar quando o vídeo é grande demais para baixar inteiro. */
+export type LinkClip = { start: number; seconds: number };
 
 const PATTERNS: [Platform, RegExp][] = [
   ['tiktok', /https?:\/\/(?:[a-z0-9-]+\.)?tiktok\.com\/[^\s]+/i],
@@ -35,6 +38,17 @@ export function findLink(text: string): FoundLink | undefined {
 
 export function youtubeId(url: string): string | undefined {
   return /(?:v=|youtu\.be\/|shorts\/|live\/|embed\/)([\w-]{11})/.exec(url)?.[1];
+}
+
+/** Tempo de início que vem no link do YouTube ("Compartilhar › Começar em"): ?t=42, t=42s, t=1m2s, start=42. */
+export function youtubeStart(url: string): number | undefined {
+  const value = /[?&#](?:t|start)=([\dhms]+)/i.exec(url)?.[1]?.toLowerCase();
+  if (!value) return undefined;
+  if (/^\d+s?$/.test(value)) return Number(value.replace('s', ''));
+  const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(value);
+  if (!m || !value) return undefined;
+  const seconds = Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0);
+  return seconds || undefined;
 }
 
 /** O link foi encontrado, mas nenhuma fonte conseguiu o vídeo. Mensagem pronta para o usuário. */
@@ -135,14 +149,21 @@ async function fetchLimited(c: Candidate, maxBytes: number): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-/** Pega só os primeiros `seconds` segundos direto do link, sem baixar o vídeo todo (para figurinha). */
-async function fetchHead(c: Candidate, seconds: number, maxBytes: number): Promise<Buffer> {
+/**
+ * Pega só o trecho pedido direto do link, sem baixar o vídeo todo (para figurinha).
+ * Do começo, copia sem recodificar (rápido). Do meio, recodifica o pedacinho: copiar começaria
+ * no quadro-chave anterior, segundos antes do ponto pedido.
+ */
+async function fetchClip(c: Candidate, clip: LinkClip, maxBytes: number): Promise<Buffer> {
   return withTempDir(async dir => {
     const out = join(dir, 'corte.mp4');
     const headers = Object.entries(c.headers ?? {}).map(([k, v]) => `${k}: ${v}\r\n`).join('');
     // Só HTTPS: mesmo que uma fonte devolva um endereço estranho (file:, concat:, http: etc.), o FFmpeg não abre.
-    await ffmpeg(['-protocol_whitelist', 'https,tls,tcp', '-user_agent', UA, ...(headers ? ['-headers', headers] : []), '-t', String(seconds), '-i', c.url,
-      '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy', '-movflags', '+faststart', out], 90_000);
+    await ffmpeg(['-protocol_whitelist', 'https,tls,tcp', '-user_agent', UA, ...(headers ? ['-headers', headers] : []),
+      ...(clip.start > 0 ? ['-ss', clip.start.toFixed(3)] : []), '-t', clip.seconds.toFixed(3), '-i', c.url,
+      '-map', '0:v:0', '-map', '0:a:0?',
+      ...(clip.start > 0 ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '16', '-c:a', 'aac', '-b:a', '160k'] : ['-c', 'copy']),
+      '-movflags', '+faststart', out], 120_000);
     const buffer = await readFile(out);
     if (buffer.length > maxBytes) throw new TooBigError();
     return buffer;
@@ -154,11 +175,11 @@ function hasYtDlp(): Promise<boolean> {
 }
 
 /** Reserva final: yt-dlp (se instalado). */
-async function viaYtDlp(link: string, maxBytes: number, headSeconds?: number): Promise<Buffer> {
+async function viaYtDlp(link: string, maxBytes: number, clip?: LinkClip): Promise<Buffer> {
   return withTempDir(async dir => {
     const args = ['--no-playlist', '--no-warnings', '-q', '--max-filesize', String(maxBytes),
       '-f', 'b[ext=mp4][vcodec!=none][acodec!=none]/b[vcodec!=none][acodec!=none]/b',
-      ...(headSeconds ? ['--download-sections', `*0-${headSeconds}`] : []),
+      ...(clip ? ['--download-sections', `*${clip.start}-${clip.start + clip.seconds}`, ...(clip.start > 0 ? ['--force-keyframes-at-cuts'] : [])] : []),
       '-o', join(dir, 'video.%(ext)s'), link];
     await new Promise<void>((resolve, reject) => execFile(process.env.YTDLP_PATH || 'yt-dlp', args,
       { timeout: 180_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 },
@@ -172,13 +193,13 @@ async function viaYtDlp(link: string, maxBytes: number, headSeconds?: number): P
 export type LinkDownloadOptions = {
   /** Tamanho máximo aceito. */
   maxBytes: number;
-  /** Para figurinha: se o vídeo for grande, pega só os primeiros N segundos em vez de recusar. */
-  headSeconds?: number;
+  /** Para figurinha: se o vídeo for grande, pega só este trecho em vez de recusar. */
+  clip?: LinkClip;
   log?: (message: string) => void;
 };
 
 export async function downloadFromLink(link: FoundLink, options: LinkDownloadOptions): Promise<LinkVideo> {
-  const { maxBytes, headSeconds, log = () => {} } = options;
+  const { maxBytes, clip, log = () => {} } = options;
   let tooBig = false;
   let userError: LinkError | undefined;
 
@@ -194,13 +215,13 @@ export async function downloadFromLink(link: FoundLink, options: LinkDownloadOpt
     }
     for (const candidate of candidates.slice(0, 3)) {
       try {
-        return { buffer: await fetchLimited(candidate, maxBytes), platform: link.platform, title: candidate.title, trimmed: false };
+        return { buffer: await fetchLimited(candidate, maxBytes), platform: link.platform, title: candidate.title, trimmed: false, startApplied: false };
       } catch (error) {
         if (error instanceof TooBigError) {
           tooBig = true;
-          if (headSeconds) {
+          if (clip) {
             try {
-              return { buffer: await fetchHead(candidate, headSeconds, maxBytes), platform: link.platform, title: candidate.title, trimmed: true };
+              return { buffer: await fetchClip(candidate, clip, maxBytes), platform: link.platform, title: candidate.title, trimmed: true, startApplied: true };
             } catch (cutError) { log(`${source.name}: corte falhou: ${cutError instanceof Error ? cutError.message : cutError}`); }
           }
           continue;
@@ -213,7 +234,7 @@ export async function downloadFromLink(link: FoundLink, options: LinkDownloadOpt
   if (userError) throw userError;
   if (await hasYtDlp()) {
     try {
-      return { buffer: await viaYtDlp(link.url, maxBytes, headSeconds), platform: link.platform, trimmed: !!headSeconds };
+      return { buffer: await viaYtDlp(link.url, maxBytes, clip), platform: link.platform, trimmed: !!clip, startApplied: !!clip };
     } catch (error) {
       if (error instanceof TooBigError) tooBig = true;
       else log(`yt-dlp falhou: ${error instanceof Error ? error.message : error}`);

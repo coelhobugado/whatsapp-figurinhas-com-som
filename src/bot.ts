@@ -5,10 +5,10 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
-import { findMedia, findMessageLink, HELP_TEXT, messageText, parseCommand, parseFit, type Command } from './commands.js';
-import { createAnimatedSticker, createStaticSticker, MAX_INPUT_BYTES, type StickerResult } from './convert.js';
+import { findMedia, findMessageLink, formatTime, HELP_TEXT, messageText, parseClip, parseCommand, parseFit, type Command } from './commands.js';
+import { createAnimatedSticker, createStaticSticker, MAX_INPUT_BYTES, MAX_SECONDS, type StickerResult } from './convert.js';
 import { checkTools, ConversionError, ToolError } from './ffmpeg.js';
-import { downloadFromLink, LinkError, PLATFORM_NAME, type FoundLink } from './link-download.js';
+import { downloadFromLink, LinkError, PLATFORM_NAME, youtubeStart, type FoundLink, type LinkClip } from './link-download.js';
 import { JobQueue, TimeoutError } from './queue.js';
 import { markConnected, setQr, startQrPage } from './qr-page.js';
 import { sendSoundSticker } from './sound-sticker.js';
@@ -137,8 +137,17 @@ async function trySoundSticker(message: WAMessage, media: { gif: boolean }, resu
   }
 }
 
-async function linkDownload(link: FoundLink, maxBytes: number, headSeconds?: number) {
-  return downloadFromLink(link, { maxBytes, headSeconds, log: DEBUG ? m => log(`[link] ${m}`) : undefined });
+async function linkDownload(link: FoundLink, maxBytes: number, clip: LinkClip) {
+  return downloadFromLink(link, { maxBytes, clip, log: DEBUG ? m => log(`[link] ${m}`) : undefined });
+}
+
+/** Aviso sobre o trecho usado ("Usei de 0:42 a 0:52."), quando não foi o vídeo inteiro desde o começo. */
+function clipNotice(result: StickerResult, startOffset: number, explicit: boolean): string | undefined {
+  const start = startOffset + (result.startSeconds ?? 0);
+  const end = start + (result.clipSeconds ?? result.durationMs / 1000);
+  if (explicit || start > 0) return `Usei o trecho de ${formatTime(start)} a ${formatTime(end)}.`;
+  if (result.trimmed) return 'Usei só os primeiros 10 segundos. Para outro trecho, mande por exemplo *!som 0:42*.';
+  return undefined;
 }
 
 async function handle(command: Command, text: string, message: WAMessage): Promise<void> {
@@ -153,16 +162,27 @@ async function handle(command: Command, text: string, message: WAMessage): Promi
   }
   if (media && media.fileLength > MAX_INPUT_BYTES) { await reply(message, 'Esse arquivo passa de 16 MB. Corte o vídeo ou mande um menor.'); return; }
 
+  // Trecho: "!som 0:42" / "!som 0:42-0:47"; sem isso, o tempo do link do YouTube (?t=42), se houver.
+  const parsedClip = parseClip(text);
+  if (parsedClip && 'error' in parsedClip) { await reply(message, parsedClip.error); return; }
+  const linkStart = link?.platform === 'youtube' ? youtubeStart(link.url) : undefined;
+  const clip = parsedClip ?? (linkStart ? { start: linkStart } : undefined);
+  const clipSeconds = Math.min(MAX_SECONDS, clip?.seconds ?? MAX_SECONDS);
+
   const started = performance.now();
   const steps: string[] = [];
   await react(message, '⏳');
   try {
     const fit = parseFit(text);
     let input: Buffer;
+    // Quanto do início já foi pulado na origem (o link baixou só o trecho).
+    let startOffset = 0;
     if (media) input = await download(media.message);
     else {
       const t0 = performance.now();
-      input = (await linkDownload(link!, MAX_INPUT_BYTES, 10)).buffer;
+      const video = await linkDownload(link!, MAX_INPUT_BYTES, { start: clip?.start ?? 0, seconds: clipSeconds });
+      input = video.buffer;
+      if (video.startApplied) startOffset = clip?.start ?? 0;
       steps.push(`link ${PLATFORM_NAME[link!.platform]} ${Math.round(performance.now() - t0)}ms`);
     }
     if (media?.kind === 'image') {
@@ -176,10 +196,12 @@ async function handle(command: Command, text: string, message: WAMessage): Promi
 
     const result = await createAnimatedSticker(input, {
       fit, meta: STICKER_META, withAudio: command === 'som',
+      startSeconds: (clip?.start ?? 0) - startOffset, maxSeconds: clipSeconds,
       onStep: DEBUG ? (step, ms) => steps.push(`${step} ${Math.round(ms)}ms`) : undefined,
     });
     const notices: string[] = [];
-    if (result.trimmed) notices.push('Usei só os primeiros 10 segundos.');
+    const clipText = clipNotice(result, startOffset, !!parsedClip);
+    if (clipText) notices.push(clipText);
 
     let withSound = false;
     if (command === 'som') {
@@ -235,7 +257,7 @@ async function connect(): Promise<void> {
   current.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
     if (qr) {
       setQr(qr);
-      startQrPage(QR_PORT);
+      startQrPage(QR_PORT, { open: process.env.ABRIR_QR === 'true' });
       console.log('\nEscaneie o QR no WhatsApp: Configurações › Aparelhos conectados › Conectar um aparelho');
       console.log(`(ou abra http://localhost:${QR_PORT} para ver o QR como imagem)\n`);
       qrcode.generate(qr, { small: true });
