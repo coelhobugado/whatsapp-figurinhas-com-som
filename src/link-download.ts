@@ -52,7 +52,10 @@ export function youtubeStart(url: string): number | undefined {
 }
 
 /** O link foi encontrado, mas nenhuma fonte conseguiu o vídeo. Mensagem pronta para o usuário. */
-export class LinkError extends Error {}
+/** Problema com o link, com mensagem pronta para o usuário e um código curto para o registro de erros. */
+export class LinkError extends Error {
+  constructor(message: string, readonly code = 'LINK') { super(message); }
+}
 
 class TooBigError extends Error {}
 
@@ -80,7 +83,7 @@ const SOURCES: Record<Platform, Source[]> = {
         const { default: tt } = await import('@tobyg74/tiktok-api-dl');
         const r = await tt.Downloader(link, { version: 'v1' });
         if (r.status !== 'success' || !r.result) throw new Error(r.message ?? 'sem resultado');
-        if (r.result.type === 'image') throw new LinkError('Esse TikTok é um post de fotos, não um vídeo.');
+        if (r.result.type === 'image') throw new LinkError('Esse TikTok é um post de fotos, não um vídeo.', 'LINK-FOTOS');
         return nonEmpty(r.result.video?.playAddr ?? []).map(url => ({ url, title: r.result!.desc, headers: { Referer: 'https://www.tiktok.com/' } }));
       },
     },
@@ -101,7 +104,7 @@ const SOURCES: Record<Platform, Source[]> = {
         const { instagramGetUrl } = await import('instagram-url-direct');
         const r = await instagramGetUrl(link, { retries: 1, delay: 500 });
         const videos = r.media_details.filter(m => m.type === 'video').map(m => m.url);
-        if (!videos.length && r.media_details.length) throw new LinkError('Esse post do Instagram só tem fotos, não um vídeo.');
+        if (!videos.length && r.media_details.length) throw new LinkError('Esse post do Instagram só tem fotos, não um vídeo.', 'LINK-FOTOS');
         return nonEmpty(videos).map(url => ({ url, title: r.post_info?.caption }));
       },
     },
@@ -112,7 +115,7 @@ const SOURCES: Record<Platform, Source[]> = {
       name: 'youtubei.js',
       async resolve(link) {
         const id = youtubeId(link);
-        if (!id) throw new LinkError('Não reconheci esse link do YouTube.');
+        if (!id) throw new LinkError('Não reconheci esse link do YouTube.', 'LINK-INVALIDO');
         const { Innertube, Log } = await import('youtubei.js');
         Log.setLevel(Log.Level.NONE);
         const yt = await Innertube.create({ retrieve_player: false });
@@ -241,8 +244,8 @@ export async function downloadFromLink(link: FoundLink, options: LinkDownloadOpt
     }
   }
 
-  if (tooBig) throw new ConversionError(`O vídeo passa de ${Math.round(maxBytes / 1024 / 1024)} MB.`);
+  if (tooBig) throw new ConversionError(`O vídeo passa de ${Math.round(maxBytes / 1024 / 1024)} MB.`, 'TAMANHO');
   throw new LinkError(`Não consegui baixar esse vídeo do ${PLATFORM_NAME[link.platform]}. ` +
-    (link.platform === 'instagram' ? 'Confira se o post é público (conta privada não dá).' : 'Confira se o link está certo e o vídeo é público.'));
+    (link.platform === 'instagram' ? 'Confira se o post é público (conta privada não dá).' : 'Confira se o link está certo e o vídeo é público.'), 'LINK-BAIXAR');
 }
 

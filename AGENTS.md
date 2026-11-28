@@ -73,6 +73,7 @@ atualizar à mão uma vez (baixar o ZIP de novo mantendo `sessao/` e `.env`, ou 
 | `!fig` | `!figurinha`, `!f`, `!s` | Figurinha comum, sem som (foto, vídeo, GIF, ou link) |
 | `!ajuda` | `!help`, `!comandos` | Lista os comandos (para quem cuida do bot, inclui o `!atualizar`) |
 | `!atualizar` | `!update` | **Só dono** (número do bot ou `ADMIN_NUMBERS`): atualiza agora; `off`/`on` desliga/liga a automática |
+| `!erros` | `!erro`, `!logs` | **Só dono**: últimos erros; `!erros <ref>` mostra o detalhe técnico de um |
 
 - Funciona mandando a mídia **com a legenda** ou **respondendo** a uma mídia/link com o comando.
 - `inteiro` depois do comando (`!som inteiro`) mantém a imagem toda com bordas transparentes; o padrão corta o centro.
@@ -81,7 +82,10 @@ atualizar à mão uma vez (baixar o ZIP de novo mantendo `sessao/` e `.env`, ou 
   quando o vídeo é grande (funciona com vídeos de horas). Código: `parseClip` em `src/commands.ts`, `startSeconds`/`maxSeconds`
   em `src/convert.ts`, `fetchClip` em `src/link-download.ts`.
 - Limites: até **10 s** por figurinha; vídeo enviado de até **16 MB**.
-- Reações do bot: ⏳ processando · 🔊 saiu com som · ✅ saiu sem som · ❌ erro.
+- Reações do bot: 🕒 na fila · ⏳ processando · 🔊 saiu com som · ✅ saiu sem som · ❌ erro.
+- Todo erro volta como uma frase curta + `(erro CÓDIGO · ref abc123)`. Para o usuário dono entender o que houve:
+  `!erros abc123` no WhatsApp, `erros abc123` na janela do bot, ou a linha com essa `ref` em `dados/erros.jsonl`.
+  A tabela de códigos está no README (seção "Fila, anti-flood e quedas").
 
 ## 5. Configuração (`.env`) — mudanças que o usuário mais pede
 
@@ -92,7 +96,9 @@ atualizar à mão uma vez (baixar o ZIP de novo mantendo `sessao/` e `.env`, ou 
 | "A porta 3999 está ocupada" | `QR_PORT=4000` |
 | "O FFmpeg não é encontrado" | `FFMPEG_PATH=` e `FFPROBE_PATH=` com o caminho completo do executável |
 | "Quero ver o que está acontecendo" | `DEBUG=true` |
-| "Fila enche rápido" | `MAX_PENDING=10` |
+| "Fila enche rápido" | `MAX_PENDING=40` (e, num computador bom, `MAX_PARALLEL=3`) |
+| "Quero que responda o que chegou com ele desligado há mais tempo" | `MAX_MESSAGE_AGE_MINUTES=600` |
+| "Quero que ligue junto com o Windows" | Dois cliques em `LIGAR-COM-O-WINDOWS.bat` (de novo desfaz) |
 | "Não quero que ele se atualize sozinho" | `AUTO_UPDATE=false` (ou digitar `atualizar off` na janela do bot) |
 | "Quero usar o !atualizar do meu número" | `ADMIN_NUMBERS=5511999998888` (mesmo formato do `ALLOWED_NUMBERS`) |
 
@@ -110,7 +116,12 @@ Vazio em `ALLOWED_NUMBERS` = **qualquer pessoa** pode usar. O próprio número d
 | `src/sound-sticker.ts` | Monta e envia a figurinha com som (campos de protobuf não oficiais, patch em `proto.Message.encode`) |
 | `src/webp.ts` | Lê WebP e grava o nome do pacote (EXIF) |
 | `src/link-download.ts` | Pega o vídeo de links do TikTok/Instagram/YouTube para `!som`/`!fig`, com fontes de reserva (+ `yt-dlp` opcional). Bibliotecas que falam com a plataforma (exceção: a fonte de reserva `tiktok-api-dl v2` usa o site SSSTik) e FFmpeg limitado a HTTPS. Busca só o trecho pedido (`fetchClip`) quando o vídeo é grande |
-| `src/queue.ts` | Fila: um pedido por vez, um por pessoa, limite total, timeout de 3 min |
+| `src/queue.ts` | `FairQueue`: vários pedidos em paralelo, vez da conversa menos atendida, nunca dois da mesma pessoa juntos, limites por pessoa/conversa/total, tempo máximo |
+| `src/limits.ts` | Anti-flood: `RateLimiter` (por pessoa/grupo) e `Pacer` (ritmo de envio, sem perder mensagens) |
+| `src/errors.ts` | `classifyError` (erro → código curto + mensagem), `ErrorLog` (`dados/erros.jsonl`, `!erros`). Erros de usuário: `ConversionError`/`LinkError` com `code` |
+| `src/terminal.ts` | Janela do bot, minimalista: `header` (limpa a tela), `log.online/ok/fail/warn/info/update/debug` (uma linha "HH:MM símbolo texto  detalhe"), `log.block` (status, erros), prompt `›` (`attachPrompt`). Cores só em terminal de verdade e sem `NO_COLOR`; sem emoji (o cmd antigo não mostra). Use `log.*` em vez de `console.log`. Cada uso aparece como "+55 ... (Nome) usou !som" (em grupo, com o nome do grupo) — números só na janela, nunca em `dados/` |
+| `src/pending.ts` | Pedidos salvos em `dados/pedidos.json` para retomar depois de queda/atualização (abandona após 2 quedas: `TRAVOU`) |
+| `scripts/ligar-com-windows.ps1` + `LIGAR-COM-O-WINDOWS.bat` | Atalho na pasta Inicializar do Windows (alterna ligado/desligado) |
 | `src/qr-page.ts` | Página local com o QR |
 | `src/updater.ts` | Atualização automática: `checkForUpdate()` (git ou pacote do GitHub), `installTarball`, `saveEnvSetting`. Nunca toca `.env`, `sessao/`, `saida/`, `node_modules/` |
 | `scripts/iniciar-bot.mjs` | O que o `npm start` roda: abre `src/bot.ts` e o reabre quando ele sai com 75 (atualizou) ou 76 (atualizou e precisa de `npm ci`). JS puro, só módulos do Node |
@@ -124,7 +135,10 @@ Vazio em `ALLOWED_NUMBERS` = **qualquer pessoa** pode usar. O próprio número d
 
 - **Novo apelido de comando**: adicionar em `ALIASES` em `src/commands.ts` e, se fizer sentido, no `HELP_TEXT`.
 - **Novo comando**: adicionar ao tipo `Command` e a `ALIASES` (`src/commands.ts`), tratar em `handle()` em `src/bot.ts`, atualizar `HELP_TEXT`, o `README.md` e um teste em `test/commands.test.ts`.
-- **Mudar um texto que o bot responde**: as mensagens ficam em `src/bot.ts` (`friendlyError`, `trySoundSticker`, `handle`, `onMessage`) e `HELP_TEXT` em `src/commands.ts`.
+- **Mudar um texto que o bot responde**: as mensagens de erro ficam em `classifyError` (`src/errors.ts`) e nas
+  `ConversionError`/`LinkError`; as outras em `src/bot.ts` (`trySoundSticker`, `handle`, `onMessage`, `refusalNotice`) e `HELP_TEXT` em `src/commands.ts`.
+- **Novo tipo de erro**: lançar `ConversionError(mensagem, 'CODIGO')` (ou `LinkError`) se a mensagem for para o usuário;
+  para erros de sistema, ensinar `classifyError` a reconhecê-lo. Pôr o código na tabela do README e um caso em `test/resiliencia.test.ts`.
 - **Mudar limites de figurinha** (10 s, 16 MB, 500 KB): constantes no topo de `src/convert.ts`. Os limites 512 px / 500 KB / 100 KB vêm do WhatsApp — **não aumente**, a figurinha passa a ser recusada.
 - **Testar conversão sem WhatsApp**: `npm run converter -- video.mp4 [--inteiro]`.
 
@@ -144,13 +158,17 @@ Vazio em `ALLOWED_NUMBERS` = **qualquer pessoa** pode usar. O próprio número d
 | `!som <link>` / `!fig <link>` falha | Sites mudam e quebram os baixadores | Tentar de novo; instalar `yt-dlp` como reserva (`YTDLP_PATH`); atualizar dependências |
 | `Atualização automática: há arquivos do bot modificados…` | Instalação pelo git com arquivos mudados | `git checkout .` para descartar, ou desligar a atualização e atualizar à mão |
 | `Não consegui instalar as dependências novas` | `npm ci` falhou depois de atualizar | Conferir internet e rodar `npm install` na pasta |
+| Usuário recebeu `erro XYZ · ref abc123` | Qualquer falha num pedido | `!erros abc123` mostra o detalhe técnico; tabela de códigos no README |
+| `O bot caiu 5 vezes em 10 minutos` | Erro que se repete ao abrir | Ler o erro na tela e em `dados/erros.jsonl`; corrigir e abrir de novo |
 
 ## 8. Regras para a IA ao alterar o código
 
 **Nunca:**
 - Ler, mostrar, copiar ou subir o conteúdo de `sessao/` — ela **é o login da conta do WhatsApp**. Também tem números de telefone de terceiros.
+- Publicar ou commitar `dados/`: `pedidos.json` tem o conteúdo das mensagens pendentes. (O `erros.jsonl` não tem telefones, mas fica junto.)
+- Pôr número de telefone ou conteúdo de mensagem no registro de erros (`ErrorContext`).
 - Mostrar ou publicar o `.env` real do usuário. Use o `.env.example` como referência.
-- Commitar `sessao/`, `.env`, `saida/` (já estão no `.gitignore` — mantenha assim).
+- Commitar `sessao/`, `.env`, `saida/`, `dados/` (já estão no `.gitignore` — mantenha assim).
 - Mexer no patch de `proto.Message.encode` em `src/sound-sticker.ts` sem rodar os testes: ele precisa deixar **todas as outras mensagens byte a byte iguais** (há teste para isso).
 - Remover o fallback "manda sem som e explica o motivo". O usuário final nunca deve ficar sem resposta.
 - Adicionar serviço externo de conversão: a conversão é local por princípio (privacidade).

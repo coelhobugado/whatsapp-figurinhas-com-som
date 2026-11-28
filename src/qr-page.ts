@@ -5,6 +5,7 @@
 import { createServer, type Server } from 'node:http';
 import { spawn } from 'node:child_process';
 import QRCode from 'qrcode';
+import { log } from './terminal.js';
 
 type State = { qr?: string; connected: boolean };
 const state: State = { connected: false };
@@ -60,8 +61,8 @@ export function startQrPage(port: number, options: { open?: boolean } = {}): voi
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(PAGE);
   });
-  server.listen(port, '127.0.0.1', () => console.log(`QR também disponível em http://localhost:${port}`));
-  server.on('error', error => console.error('Página do QR indisponível:', error.message));
+  server.listen(port, '127.0.0.1');
+  server.on('error', error => log.warn(`a página do QR (porta ${port}) não abriu`, `${error.message} · use o QR da janela ou mude QR_PORT no .env`));
 }
 
 export function setQr(qr: string): void { state.qr = qr; state.connected = false; }

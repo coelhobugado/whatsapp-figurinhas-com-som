@@ -63,4 +63,4 @@ if [ "${1:-}" = "--so-preparar" ]; then ok 'tudo pronto (o bot não foi ligado)'
 passo 'Ligando o bot'
 [ -f sessao/creds.json ] || echo '   Na primeira vez, o navegador vai abrir com um QR code. No celular do bot: WhatsApp > Configurações > Aparelhos conectados > Conectar um aparelho.'
 echo '   Para desligar o bot, aperte Ctrl + C.'
-ABRIR_QR=true npm start
+ABRIR_QR=true npm start --silent

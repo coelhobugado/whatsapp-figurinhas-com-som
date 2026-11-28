@@ -3,8 +3,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-/** Erro com mensagem pronta para mostrar ao usuário no WhatsApp. */
-export class ConversionError extends Error {}
+/**
+ * Erro com mensagem pronta para mostrar ao usuário no WhatsApp. `code` é o código curto que aparece
+ * na resposta ("erro TAMANHO") para quem cuida do bot achar o problema no registro de erros.
+ */
+export class ConversionError extends Error {
+  constructor(message: string, readonly code = 'CONVERSAO') { super(message); }
+}
 
 /** Falha interna de uma ferramenta (FFmpeg/ffprobe). A mensagem é técnica, só para o log. */
 export class ToolError extends Error {}
@@ -61,7 +66,7 @@ export async function probe(path: string): Promise<MediaInfo> {
       'format=duration:stream=codec_type,width,height,avg_frame_rate', '-of', 'json', path], 20_000)).stdout;
   } catch (error) {
     if (error instanceof ToolError && /não foi encontrado/.test(error.message)) throw error;
-    throw new ConversionError('Não consegui ler esse arquivo. Ele pode estar corrompido ou num formato não suportado.');
+    throw new ConversionError('Não consegui ler esse arquivo. Ele pode estar corrompido ou num formato não suportado.', 'ARQUIVO-ILEGIVEL');
   }
   const data = JSON.parse(out) as {
     streams?: { codec_type?: string; width?: number; height?: number; avg_frame_rate?: string }[];
@@ -79,6 +84,14 @@ export async function probe(path: string): Promise<MediaInfo> {
     height: video?.height,
     fps: fps && Number.isFinite(fps) && fps > 0 && fps < 1000 ? fps : undefined,
   };
+}
+
+/** Versão do FFmpeg instalado ("9.0.2"), para mostrar na abertura. */
+export async function ffmpegVersion(): Promise<string | undefined> {
+  try {
+    const { stdout } = await runFull(FFMPEG, ['-hide_banner', '-version'], 10_000);
+    return /version\s+n?([\w.]+)/.exec(stdout)?.[1];
+  } catch { return undefined; }
 }
 
 /**

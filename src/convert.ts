@@ -10,6 +10,9 @@ export const MAX_ANIMATED_BYTES = 500_000;
 export const MAX_SECONDS = 10;
 export const MAX_INPUT_BYTES = 16 * 1024 * 1024;
 export const MAX_AUDIO_BYTES = 256_000;
+/** Resolução máxima aceita (vídeo até 4K; foto até 100 megapixels): acima disso só gasta CPU e memória. */
+export const MAX_VIDEO_PIXELS = 4096 * 2304;
+export const MAX_IMAGE_PIXELS = 100_000_000;
 
 /** Espaço guardado para o bloco EXIF com nome do pacote. */
 const METADATA_RESERVE = 2_000;
@@ -34,6 +37,8 @@ export type StickerOptions = {
   maxSeconds?: number;
   /** Recebe o tempo de cada etapa, para medir desempenho. */
   onStep?: (step: string, ms: number) => void;
+  /** Chamado assim que o áudio fica pronto (e não está mudo), antes da imagem: dá para começar a enviá-lo. */
+  onAudio?: (audio: Buffer) => void;
 };
 
 export type StickerResult = {
@@ -81,9 +86,17 @@ function formatSeconds(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+/** Recusa logo, antes de decodificar, imagens e vídeos com resolução absurda (8K, fotos de 200 MP, arquivos forjados). */
+function checkResolution(info: { width?: number; height?: number }, maxPixels: number, kind: 'vídeo' | 'imagem'): void {
+  const { width = 0, height = 0 } = info;
+  if (width * height > maxPixels || Math.max(width, height) > 16384)
+    throw new ConversionError(`Esse ${kind} tem resolução alta demais (${width}×${height}). ` +
+      (kind === 'vídeo' ? 'Mande em 4K ou menos.' : 'Mande uma foto menor.'), 'RESOLUCAO');
+}
+
 function checkInput(input: Buffer): void {
-  if (!input.length) throw new ConversionError('O arquivo veio vazio.');
-  if (input.length > MAX_INPUT_BYTES) throw new ConversionError('O arquivo passa de 16 MB.');
+  if (!input.length) throw new ConversionError('O arquivo veio vazio.', 'ARQUIVO-VAZIO');
+  if (input.length > MAX_INPUT_BYTES) throw new ConversionError('O arquivo passa de 16 MB.', 'TAMANHO');
 }
 
 /** Primeira etapa: só ajusta o enquadramento (o resto fica para os degraus). */
@@ -129,8 +142,8 @@ async function extractAudio(source: string, start: number, seconds: number, outp
     '-af', `afade=t=in:d=0.02,afade=t=out:st=${fadeOut}:d=0.12,volumedetect`,
     '-c:a', 'libopus', '-b:a', '64k', '-application', 'audio', '-map_metadata', '-1', '-f', 'ogg', output], 60_000);
   const audio = await readFile(output);
-  if (!audio.length) throw new ConversionError('O áudio saiu vazio.');
-  if (audio.length > MAX_AUDIO_BYTES) throw new ConversionError('O áudio ficou grande demais.');
+  if (!audio.length) throw new ConversionError('O áudio saiu vazio.', 'AUDIO');
+  if (audio.length > MAX_AUDIO_BYTES) throw new ConversionError('O áudio ficou grande demais.', 'AUDIO');
   const raw = /max_volume:\s*(-?[\d.]+|-inf) dB/.exec(stderr)?.[1];
   const maxVolume = raw === '-inf' ? -Infinity : Number(raw);
   return { audio, silent: raw !== undefined && maxVolume <= SILENCE_DB };
@@ -143,7 +156,8 @@ export async function createStaticSticker(input: Buffer, fit: FitMode = 'cortar'
     const source = join(dir, 'entrada'), output = join(dir, 'figurinha.webp');
     await writeFile(source, input);
     const info = await probe(source);
-    if (!info.hasVideo) throw new ConversionError('Não encontrei uma imagem nesse arquivo.');
+    if (!info.hasVideo) throw new ConversionError('Não encontrei uma imagem nesse arquivo.', 'SEM-IMAGEM');
+    checkResolution(info, MAX_IMAGE_PIXELS, 'imagem');
     const S = STICKER_SIZE;
     const filter = fit === 'cortar'
       ? `scale=${S}:${S}:force_original_aspect_ratio=increase:flags=lanczos,crop=${S}:${S},setsar=1`
@@ -157,7 +171,7 @@ export async function createStaticSticker(input: Buffer, fit: FitMode = 'cortar'
         return { sticker, animated: false, durationMs: 0, trimmed: false, hasAudio: false };
       }
     }
-    throw new ConversionError('Não consegui deixar a figurinha abaixo de 100 KB.');
+    throw new ConversionError('Não consegui deixar a figurinha abaixo de 100 KB.', 'LIMITE-100KB');
   });
 }
 
@@ -181,19 +195,23 @@ export async function createAnimatedSticker(input: Buffer, options: StickerOptio
     const source = join(dir, 'entrada'), base = join(dir, 'base.mkv');
     await writeFile(source, input);
     const info = await timed('analisar', () => probe(source));
-    if (!info.hasVideo) throw new ConversionError('Não encontrei vídeo nesse arquivo.');
+    if (!info.hasVideo) throw new ConversionError('Não encontrei vídeo nesse arquivo.', 'SEM-VIDEO');
+    checkResolution(info, MAX_VIDEO_PIXELS, 'vídeo');
     const start = Math.max(0, options.startSeconds ?? 0);
     const total = info.durationSec;
     if (total !== undefined && start > 0 && start > total - 0.2)
-      throw new ConversionError(`O vídeo tem só ${formatSeconds(total)}. Escolha um início antes disso.`);
+      throw new ConversionError(`O vídeo tem só ${formatSeconds(total)}. Escolha um início antes disso.`, 'TRECHO');
     const wanted = Math.min(MAX_SECONDS, options.maxSeconds ?? MAX_SECONDS);
     const seconds = Math.min(wanted, (total ?? start + wanted) - start);
-    if (seconds < 0.2) throw new ConversionError('O trecho é curto demais (mínimo 0,2 s).');
+    if (seconds < 0.2) throw new ConversionError('O trecho é curto demais (mínimo 0,2 s).', 'TRECHO');
 
     // Áudio em paralelo com todo o trabalho de imagem. Falha no áudio não derruba a figurinha.
     const audioTask = options.withAudio && info.hasAudio
       ? timed('áudio', () => extractAudio(source, start, seconds, join(dir, 'audio.ogg'))).then(
-        result => ({ ...result, error: undefined }),
+        result => {
+          if (!result.silent) options.onAudio?.(result.audio);
+          return { ...result, error: undefined };
+        },
         (error: Error) => ({ audio: undefined, silent: false, error }))
       : undefined;
 
@@ -204,7 +222,7 @@ export async function createAnimatedSticker(input: Buffer, options: StickerOptio
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '10', '-pix_fmt', 'yuv444p', base], 120_000)
       .catch((error: unknown) => {
         throw error instanceof ToolError && !/não foi encontrado/.test(error.message)
-          ? new ConversionError('Não consegui ler o vídeo. Ele pode estar corrompido ou num formato não suportado.') : error;
+          ? new ConversionError('Não consegui ler o vídeo. Ele pode estar corrompido ou num formato não suportado.', 'ARQUIVO-ILEGIVEL') : error;
       }));
     const baseInfo = await probe(base);
     const w = baseInfo.width ?? STICKER_SIZE, h = baseInfo.height ?? STICKER_SIZE;
@@ -240,10 +258,10 @@ export async function createAnimatedSticker(input: Buffer, options: StickerOptio
       const size = await timed(`codificar (degrau ${i + 1})`, () => encodeWebp(base, output, stepFilter(fit, step, w, h), step[1]));
       if (size <= limit) sticker = withMetadata(await readFile(output), options.meta);
     }
-    if (!sticker) throw new ConversionError('Não consegui deixar a animação abaixo de 500 KB. Tente um trecho mais curto.');
+    if (!sticker) throw new ConversionError('Não consegui deixar a animação abaixo de 500 KB. Tente um trecho mais curto.', 'LIMITE-500KB');
 
     const webp = inspectWebp(sticker);
-    if (!webp.animated || webp.frames < 2) throw new ConversionError('Esse vídeo é curto ou parado demais para virar animação.');
+    if (!webp.animated || webp.frames < 2) throw new ConversionError('Esse vídeo é curto ou parado demais para virar animação.', 'ANIMACAO');
     if (webp.width !== STICKER_SIZE || webp.height !== STICKER_SIZE) throw new ToolError(`Figurinha saiu com ${webp.width}×${webp.height}.`);
 
     const audio = await audioTask;

@@ -111,20 +111,33 @@ export type SoundStickerInput = {
   audio: Buffer;        // Ogg/Opus
   durationMs: number;
   quoted?: WAMessage;
+  /** Áudio que já começou a subir antes (enquanto o vídeo era convertido). Se falhar, sobe de novo. */
+  uploadedAudio?: Promise<proto.Message.IAudioMessage>;
 };
 
-/** Faz upload das duas mídias, monta a mensagem sonora e envia. Devolve o id da mensagem. */
+const uploadOptions = (socket: WASocket) => ({ upload: socket.waUploadToServer, mediaUploadTimeoutMs: 60_000 });
+
+/**
+ * Sobe o áudio da figurinha (com o streamingSidecar). Pode começar antes de a imagem ficar pronta:
+ * o áudio sai da conversão em ~0,3 s, e a imagem leva alguns segundos.
+ */
+export async function uploadStickerAudio(socket: WASocket, audio: Buffer): Promise<proto.Message.IAudioMessage> {
+  const sound = await prepareWAMessageMedia({ audio, mimetype: 'audio/ogg; codecs=opus', seconds: 1 }, uploadOptions(socket));
+  const audioMessage = sound.audioMessage;
+  if (!audioMessage?.mediaKey || !audioMessage.fileEncSha256) throw new Error('Falha ao preparar o áudio da figurinha.');
+  audioMessage.streamingSidecar = await createStreamingSidecar(audio, audioMessage.mediaKey, audioMessage.fileEncSha256);
+  return audioMessage;
+}
+
+/** Faz upload das duas mídias (ao mesmo tempo), monta a mensagem sonora e envia. Devolve o id da mensagem. */
 export async function sendSoundSticker(socket: WASocket, jid: string, input: SoundStickerInput): Promise<string> {
   if (!socket.user?.id) throw new Error('Socket ainda não autenticado.');
-  const options = { upload: socket.waUploadToServer, mediaUploadTimeoutMs: 60_000 };
-  const visual = await prepareWAMessageMedia({ sticker: input.sticker, isAnimated: true, width: 512, height: 512 }, options);
-  const sound = await prepareWAMessageMedia({
-    audio: input.audio, mimetype: 'audio/ogg; codecs=opus', seconds: Math.max(1, Math.ceil(input.durationMs / 1000)),
-  }, options);
-  const audioMessage = sound.audioMessage;
-  if (!visual.stickerMessage || !audioMessage?.mediaKey || !audioMessage.fileEncSha256)
-    throw new Error('Falha ao preparar as mídias da figurinha.');
-  audioMessage.streamingSidecar = await createStreamingSidecar(input.audio, audioMessage.mediaKey, audioMessage.fileEncSha256);
+  const [visual, audioMessage] = await Promise.all([
+    prepareWAMessageMedia({ sticker: input.sticker, isAnimated: true, width: 512, height: 512 }, uploadOptions(socket)),
+    (input.uploadedAudio ?? Promise.reject(new Error('sem upload prévio'))).catch(() => uploadStickerAudio(socket, input.audio)),
+  ]);
+  if (!visual.stickerMessage) throw new Error('Falha ao preparar as mídias da figurinha.');
+  audioMessage.seconds = Math.max(1, Math.ceil(input.durationMs / 1000));
 
   const message = generateWAMessageFromContent(jid, visual, { userJid: socket.user.id, quoted: input.quoted });
   const content = message.message as MarkedMessage | null | undefined;

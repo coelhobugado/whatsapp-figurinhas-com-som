@@ -49,8 +49,10 @@ O bot roda no seu computador ou servidor, conectado a um número de WhatsApp com
 - ⚡ **Rápido**: ~3–8 s por figurinha, mesmo com vídeo 1080p pesado ([veja como](#como-ficou-rápido)).
 - 🖼️ **Sem bordas pretas**: preenche o quadrado 512×512 cortando o centro, ou `inteiro` para manter a imagem toda com fundo transparente.
 - 🏷️ **Nome do pacote personalizado** ("Criada por …") gravado na figurinha.
-- 🛟 **Nunca deixa ninguém sem resposta**: se o som falhar, manda a versão sem som e explica o motivo (vídeo sem áudio, áudio mudo, recusa do WhatsApp…).
-- 🧵 **Fila justa**: um pedido por pessoa de cada vez, posição na fila e limite de tempo por pedido.
+- 🛟 **Nunca deixa ninguém sem resposta**: se o som falhar, manda a versão sem som e explica o motivo. Todo erro volta numa frase curta com um código (ex.: `erro REDE · ref a1b2c3`) que quem cuida do bot consulta com `!erros`.
+- 🧵 **Fila justa para grupos**: faz várias figurinhas ao mesmo tempo, reveza entre as conversas (um grupo agitado não trava o privado de ninguém) e mostra a espera com a reação 🕒, sem mensagens de "você é o 3º".
+- 🛡️ **Anti-flood**: limite de pedidos por pessoa e por grupo, e ritmo seguro de envio para o número não ser bloqueado.
+- ♻️ **Aguenta quedas**: se a internet cair, reconecta sozinho e responde o que chegou enquanto estava fora (até 3 h). Se o bot cair, reabre sozinho e retoma os pedidos que ficaram pela metade.
 - 🔒 **Privado**: a conversão é local, com FFmpeg, e os vídeos não passam por serviços de conversão. Links são baixados da própria plataforma (no TikTok, uma das fontes de reserva usa o site SSSTik).
 - 🙂 Também faz figurinhas comuns (sem som) de foto, vídeo e GIF.
 
@@ -68,7 +70,7 @@ O bot roda no seu computador ou servidor, conectado a um número de WhatsApp com
 - Formatos de tempo aceitos: `42`, `42s`, `0:42`, `1:02:03`. No YouTube, o link de "Compartilhar › Começar em" (`?t=42`) já define o início.
 - Também dá para **responder** a uma mensagem que tenha o link ou o vídeo com o comando.
 - `!som inteiro` / `!fig inteiro`: mantém a imagem toda (bordas transparentes) em vez de cortar.
-- Reações do bot: ⏳ processando · 🔊 saiu com som · ✅ saiu sem som · ❌ erro.
+- Reações do bot: 🕒 na fila · ⏳ processando · 🔊 saiu com som · ✅ saiu sem som · ❌ erro.
 - Limites: até **10 segundos** por figurinha; vídeo enviado de até **16 MB** (por link, vídeos maiores funcionam: só o trecho é baixado).
 
 ## Instalação
@@ -152,6 +154,68 @@ Com a automática desligada, o bot continua conferindo e só **avisa na janela**
 
 > Quem instalou antes desta função precisa atualizar à mão **uma vez** (baixar o ZIP de novo, mantendo `sessao/` e `.env`, ou `git pull`). Depois disso ele se atualiza sozinho.
 
+## A janela do bot
+
+Ao abrir (e depois de cada atualização) a janela é limpa e mostra só o essencial, uma linha por acontecimento, com quem usou:
+
+```
+FIGURINHAS COM SOM  v9d39d37
+──────────────────────────────────────────────
+16:48  ● bot iniciado · ouvindo comandos
+16:48  · +55 11 98765-4321 (Maria) usou !ajuda
+16:49  ✓ +55 11 98765-4321 (Maria) usou !som  com som · 7,5 s
+16:50  ✗ Amigos · +55 11 91234-5678 (Ana) usou !fig  TRECHO · ref 086009 · O vídeo tem só 0:18.
+›
+```
+
+No `›` dá para digitar: `status` (conexão, fila, versão, contagem), `atualizar`, `atualizar off`/`on`, `erros`, `erros <ref>`, `limpar`, `ajuda` e `sair`. Os números de quem usou aparecem só na janela; o registro de erros em `dados/` não guarda telefones.
+
+## Fila, anti-flood e quedas
+
+**Fila.** O bot faz até 3 figurinhas ao mesmo tempo (1, 2 ou 3, conforme os núcleos do computador; ajuste em `MAX_PARALLEL`). A vez é sempre da conversa menos atendida: se um grupo manda 6 pedidos e alguém manda 1 no privado, o do privado passa na frente do resto do grupo. Quem está esperando recebe a reação 🕒, que vira ⏳ quando começa.
+
+| Limite | Valor | Ao passar |
+|---|---|---|
+| Pedidos de uma pessoa na fila | 2 | "Você já tem pedidos na fila" |
+| Pedidos de uma conversa na fila | 6 | "Já tem muitos pedidos desta conversa" |
+| Pedidos na fila no total | 20 (`MAX_PENDING`) | "Estou com muitos pedidos agora" |
+| Comandos por pessoa por minuto | 6 | "Calma, espere um minuto" |
+| Comandos por grupo por minuto | 20 | "Muitos pedidos neste grupo" |
+| Mensagens enviadas pelo bot por minuto | 60 (`MAX_MESSAGES_PER_MINUTE`) | as mensagens esperam a vez, nada se perde |
+
+Cada aviso de limite sai no máximo uma vez a cada 2 minutos por pessoa ou grupo, para o próprio aviso não virar flood. Quem cuida do bot não entra nos limites por pessoa e por grupo.
+
+**Quedas.**
+
+- **Internet caiu:** reconecta sozinho (tenta de novo em 1 s, 2 s, 4 s… até 1 min entre tentativas, sem parar). Ao voltar, responde os pedidos mandados enquanto estava fora, de até 3 horas atrás (`MAX_MESSAGE_AGE_MINUTES`), com um "desculpe a demora".
+- **O bot caiu** (erro inesperado, falta de memória): o inicializador reabre em 2 s, 4 s, 8 s… Se cair 5 vezes em 10 minutos, para e deixa o erro na tela.
+- **Pedidos pela metade:** ficam salvos em `dados/pedidos.json` e são retomados quando o bot volta (de queda, atualização ou do computador desligado). Um pedido que derrubou o bot duas vezes é abandonado, com aviso, para não entrar num ciclo de quedas.
+- **Computador reiniciou:** no Windows, dê dois cliques em **`LIGAR-COM-O-WINDOWS.bat`** e o bot liga sozinho (minimizado) ao entrar no Windows. Dois cliques de novo desfazem. No Linux, use um serviço (systemd) ou o `pm2`.
+
+**Erros.** Toda falha vira uma resposta curta com o motivo, um código e uma referência:
+
+> Não consegui baixar o arquivo do WhatsApp (ele pode ter expirado). Reenvie e tente de novo.
+> _(erro WA-DOWNLOAD · ref 3f9a1c)_
+
+Quem cuida do bot manda `!erros` para ver os últimos erros, ou `!erros 3f9a1c` para os detalhes técnicos de um (também dá para digitar `erros` na janela do bot). Tudo fica em `dados/erros.jsonl`, sem números de telefone nem conteúdo de mensagens.
+
+| Código | O que houve |
+|---|---|
+| `TAMANHO`, `RESOLUCAO`, `TRECHO` | Arquivo grande demais, resolução acima de 4K, trecho fora do vídeo |
+| `ARQUIVO-ILEGIVEL`, `ARQUIVO-VAZIO`, `SEM-VIDEO`, `SEM-IMAGEM` | Arquivo corrompido ou sem a mídia esperada |
+| `LIMITE-500KB`, `LIMITE-100KB`, `ANIMACAO` | Não coube no limite do WhatsApp, ou o vídeo é parado demais |
+| `AUDIO`, `SOM-RECUSADO` | Não deu para extrair o áudio, ou o WhatsApp recusou a versão com som (a figurinha sai sem som) |
+| `LINK-BAIXAR`, `LINK-FOTOS`, `LINK-INVALIDO` | Problema com o link (privado, removido, post só de fotos) |
+| `WA-DOWNLOAD` | Não conseguiu baixar a mídia do WhatsApp |
+| `ENVIO`, `ENVIO-REDE` | A figurinha ficou pronta, mas o envio falhou |
+| `REDE` | A internet falhou no meio |
+| `DEMOROU`, `FFMPEG-TEMPO` | Passou do tempo máximo |
+| `FFMPEG`, `FFMPEG-FALTA` | O conversor falhou, ou o FFmpeg não está instalado |
+| `DISCO-CHEIO`, `MEMORIA` | Falta espaço ou memória no computador do bot |
+| `TRAVOU` | O pedido derrubou o bot duas vezes e foi abandonado |
+| `SESSAO-DESCONECTADA`, `SESSAO-DUPLICADA`, `NUMERO-BLOQUEADO` | Problemas de conexão que reabrir não resolve |
+| `INTERNO` | Erro não previsto: veja os detalhes com `!erros <ref>` |
+
 ## Configuração (`.env`)
 
 | Variável | Padrão | Para quê |
@@ -163,7 +227,11 @@ Com a automática desligada, o bot continua conferindo e só **avisa na janela**
 | `STICKER_PUBLISHER` | vazio | Autor mostrado ao lado do nome. |
 | `AUTH_DIR` | `./sessao` | Onde a sessão do WhatsApp é salva. |
 | `QR_PORT` | `3999` | Porta da página local do QR. |
-| `MAX_PENDING` | `5` | Quantos pedidos podem esperar na fila. |
+| `MAX_PENDING` | `20` | Pedidos na fila no total (fazendo + esperando). |
+| `MAX_PARALLEL` | automático | Figurinhas ao mesmo tempo (1, 2 ou 3 conforme os núcleos). |
+| `MAX_MESSAGE_AGE_MINUTES` | `180` | Ao voltar de uma queda, responde pedidos de até tantos minutos atrás. |
+| `MAX_MESSAGES_PER_MINUTE` | `60` | Ritmo máximo de mensagens enviadas pelo bot. |
+| `DATA_DIR` | `./dados` | Pedidos pendentes e registro de erros (não compartilhe). |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | PATH | Caminho do FFmpeg, se não estiver no PATH. |
 | `YTDLP_PATH` | PATH | `yt-dlp` opcional, usado como reserva se as bibliotecas JS falharem. |
 | `DEBUG` | `false` | Mostra cada mensagem recebida e o tempo de cada etapa (sem conteúdo nem números). |
@@ -225,7 +293,11 @@ O campo 134 e o `StickerMessage.26` não existem no protobuf do [Baileys](https:
 | [`src/webp.ts`](src/webp.ts) | Lê o WebP e grava o nome do pacote (EXIF) |
 | [`src/link-download.ts`](src/link-download.ts) | Baixa vídeos de TikTok/Instagram/YouTube pelo link, com fontes de reserva |
 | [`src/commands.ts`](src/commands.ts) | Comandos e localização da mídia (inclusive citada) |
-| [`src/queue.ts`](src/queue.ts) | Fila com limite por pessoa e tempo máximo |
+| [`src/queue.ts`](src/queue.ts) | Fila justa entre conversas, em paralelo, com limites e tempo máximo |
+| [`src/limits.ts`](src/limits.ts) | Anti-flood: limite por pessoa/grupo e ritmo de envio |
+| [`src/errors.ts`](src/errors.ts) | Reconhece cada erro, dá o código curto e guarda o registro (`!erros`) |
+| [`src/pending.ts`](src/pending.ts) | Pedidos salvos em disco para retomar depois de uma queda |
+| [`src/terminal.ts`](src/terminal.ts) | Visual da janela do bot: abertura, horário e etiquetas coloridas (OK, FIG, AVISO, ERRO…) |
 | [`src/qr-page.ts`](src/qr-page.ts) | Página local com o QR de vinculação |
 | [`src/updater.ts`](src/updater.ts) | Atualização automática (git ou pacote do GitHub) |
 | [`scripts/iniciar-bot.mjs`](scripts/iniciar-bot.mjs) | Inicializador do `npm start`: reabre o bot depois de atualizar |
@@ -257,7 +329,7 @@ O bot responde com o motivo: o vídeo não tinha áudio, o áudio era mudo, ou o
 Pode, mas é mais seguro usar um número separado. Se usar o seu, os comandos que você digitar em qualquer conversa também serão atendidos.
 
 **Precisa deixar o computador ligado?**
-Sim, o bot precisa estar rodando para responder. Para ficar 24 h, rode num servidor ou VPS (Node.js + FFmpeg).
+Sim, o bot precisa estar rodando para responder. Se ficar fora do ar por pouco tempo, ele responde ao voltar o que chegou nas últimas 3 horas. No Windows, o `LIGAR-COM-O-WINDOWS.bat` faz ele ligar sozinho com o computador. Para ficar 24 h, rode num servidor ou VPS (Node.js + FFmpeg).
 
 ## Solução de problemas
 
@@ -268,6 +340,8 @@ Sim, o bot precisa estar rodando para responder. Para ficar 24 h, rode num servi
 | O `INICIAR-WINDOWS.bat` diz que não achou o FFmpeg logo depois de instalar | Feche a janela e abra o arquivo de novo (o Windows só enxerga programas novos numa janela nova). |
 | "Não entendi o tempo…" | Use `!som 0:42` ou `!som 0:42-0:47` (minutos:segundos). |
 | Bot não responde | Rode com `DEBUG=true` e veja se as mensagens chegam; confira `ALLOWED_NUMBERS`. |
+| Alguém recebeu "erro XYZ · ref abc123" | Mande `!erros abc123` ao bot (ou digite `erros abc123` na janela) para ver o detalhe técnico. |
+| "O bot caiu 5 vezes em 10 minutos" | Leia o erro na tela (ou em `dados/erros.jsonl`), resolva e abra o bot de novo. |
 | "Outra cópia do bot abriu esta mesma sessão" | Só pode haver um bot rodando por sessão. Feche o outro. |
 | "O celular desconectou o bot" | Apague a pasta `sessao/` e escaneie o QR de novo. |
 | "Atualização automática: há arquivos do bot modificados…" | Você mudou arquivos do projeto (instalação pelo git). Desfaça com `git checkout .` ou atualize à mão. |

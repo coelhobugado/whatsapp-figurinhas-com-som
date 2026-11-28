@@ -9,9 +9,9 @@
  * Nos dois casos `.env`, `sessao/`, `saida/` e `node_modules/` nunca são tocados. Quem reabre o bot
  * (e roda `npm ci` quando as dependências mudaram) é o inicializador `scripts/iniciar-bot.mjs`.
  */
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
@@ -22,12 +22,14 @@ export const UPDATE_INTERVAL_MS = 6 * 60 * 60_000;
 /** Códigos de saída que pedem ao inicializador para reabrir o bot (76 = rodar `npm ci` antes). */
 export const EXIT_RESTART = 75;
 export const EXIT_RESTART_INSTALL = 76;
+/** Saída por queda (exceção não tratada): o inicializador reabre o bot depois de alguns segundos. */
+export const EXIT_CRASH = 70;
 /** Arquivo com o commit instalado, nas instalações feitas pelo ZIP. */
 export const VERSION_FILE = '.versao';
 const BRANCH = 'main';
 const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 /** Nunca copiados por cima, mesmo que apareçam no pacote baixado. */
-const PROTECTED = new Set(['.env', 'sessao', 'saida', 'node_modules', '.git', VERSION_FILE]);
+const PROTECTED = new Set(['.env', 'sessao', 'dados', 'saida', 'node_modules', '.git', VERSION_FILE]);
 /** No Windows 10/11 o tar.exe vem junto com o sistema. */
 const TAR = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
 
@@ -58,6 +60,15 @@ function run(file: string, args: string[], cwd: string, timeoutMs = 120_000): Pr
 }
 
 const short = (sha: string) => sha.slice(0, 7);
+
+/** Versão instalada (commit curto), para mostrar na abertura. */
+export function installedVersion(root = ROOT): string {
+  try {
+    if (existsSync(join(root, '.git')))
+      return execFileSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).toString().trim();
+  } catch { /* sem git: tenta o .versao */ }
+  try { return short(readFileSync(join(root, VERSION_FILE), 'utf8').trim()) || 'desconhecida'; } catch { return 'desconhecida'; }
+}
 
 /** Confere se há versão nova, sem mudar nada. A mudança só acontece em `plan.apply()`. */
 export async function checkForUpdate(root = ROOT): Promise<UpdateCheck> {

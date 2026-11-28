@@ -8,3 +8,5 @@ saida/
 .DS_Store
 # Versão instalada pelo ZIP (usada pela atualização automática).
 .versao
+# Pedidos pendentes e registro de erros (tem conteúdo de mensagens: nunca publique).
+dados/

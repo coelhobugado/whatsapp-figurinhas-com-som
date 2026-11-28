@@ -2,36 +2,63 @@ import { normalizeMessageContent, type proto, type WAMessage } from '@whiskeysoc
 import type { FitMode } from './convert.js';
 import { findLink, type FoundLink } from './link-download.js';
 
-export type Command = 'som' | 'figurinha' | 'ajuda' | 'atualizar';
+export type Command = 'som' | 'figurinha' | 'ajuda' | 'atualizar' | 'erros';
 
 const ALIASES: Record<string, Command> = {
   '!som': 'som', '!fs': 'som', '!figsom': 'som',
   '!fig': 'figurinha', '!figurinha': 'figurinha', '!f': 'figurinha', '!s': 'figurinha',
   '!ajuda': 'ajuda', '!help': 'ajuda', '!comandos': 'ajuda',
   '!atualizar': 'atualizar', '!update': 'atualizar',
+  '!erros': 'erros', '!erro': 'erros', '!logs': 'erros',
 };
 
+/**
+ * Menu do !ajuda, no formato do WhatsApp: *negrito*, _itálico_, `código` e "> " para citação.
+ * Curto e em blocos, para dar para bater o olho no celular.
+ */
 export const HELP_TEXT = [
-  '*Bot de figurinhas com som* 🔊',
+  '🔊 *FIGURINHAS COM SOM*',
+  '_Transformo vídeos em figurinhas que tocam o áudio._',
   '',
-  '*!som* — envie um vídeo com a legenda !som, ou responda a um vídeo com !som.',
-  '*!fig* — figurinha comum (sem som) de foto, vídeo ou GIF.',
-  '*!ajuda* — mostra esta mensagem.',
+  '*COMO USAR*',
+  '🎬 Vídeo ou GIF com a legenda `!som`',
+  '      → figurinha animada *com som*',
+  '🖼️ Foto, vídeo ou GIF com a legenda `!fig`',
+  '      → figurinha comum, sem som',
+  '↩️ Já mandou? Responda à mídia com o comando.',
   '',
-  'No lugar do vídeo, dá para mandar o link: *!som <link>* ou *!fig <link>* (TikTok, Instagram ou YouTube).',
+  '*DIRETO DO LINK* 🔗',
+  '`!som https://youtu.be/...`',
+  '_Funciona com YouTube, TikTok e Instagram._',
   '',
-  '⏱️ *Escolha o trecho:* *!som 0:42 <link>* começa no 0:42 e usa até 10 s. *!som 0:42-0:47 <link>* usa só esse pedaço. Vale também com vídeo enviado. No YouTube, link com tempo (?t=42) já começa nesse ponto.',
+  '*ESCOLHA O TRECHO* ✂️',
+  '`!som 0:42` → começa em 0:42 (até 10 s)',
+  '`!som 0:42-0:47` → só esse pedaço',
+  '_Vale para vídeo e link. Link do YouTube com ?t= já começa no ponto certo._',
   '',
-  'A figurinha preenche o quadrado cortando as sobras. Para manter a imagem inteira, use *!som inteiro* ou *!fig inteiro*.',
-  'Limites: até 10 segundos por figurinha, arquivo de até 16 MB. Vídeos mandados como documento também valem.',
+  '*IMAGEM INTEIRA* 🔲',
+  '`!som inteiro` ou `!fig inteiro` → não corta as bordas',
+  '',
+  '*LIMITES*',
+  '⏱️ até 10 s por figurinha · 📦 arquivo até 16 MB',
+  '',
+  '*O QUE AS REAÇÕES QUEREM DIZER*',
+  '🕒 na fila · ⏳ fazendo · 🔊 com som · ✅ pronta · ❌ deu erro',
 ].join('\n');
 
 /** Parte da ajuda que só aparece para quem cuida do bot (o próprio número do bot e o `ADMIN_NUMBERS`). */
 export const ADMIN_HELP_TEXT = [
-  '*Para quem cuida do bot:*',
-  '*!atualizar* — confere se há versão nova e instala agora.',
-  '*!atualizar off* — desliga a atualização automática. *!atualizar on* liga de novo.',
+  '🛠️ *SÓ PARA QUEM CUIDA DO BOT*',
+  '`!atualizar` → procura e instala a versão nova',
+  '`!atualizar off` / `!atualizar on` → desliga ou liga a atualização automática',
+  '`!erros` → últimos erros',
+  '`!erros a1b2c3` → detalhes de um erro _(a ref vem na resposta de erro)_',
 ].join('\n');
+
+/** Texto depois do comando ("!erros a1b2c3" → "a1b2c3"), ou undefined. */
+export function commandArgument(text: string): string | undefined {
+  return text.trim().split(/\s+/)[1];
+}
 
 export type UpdateAction = 'agora' | 'ligar' | 'desligar';
 

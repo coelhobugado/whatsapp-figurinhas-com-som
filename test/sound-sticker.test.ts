@@ -73,7 +73,7 @@ test('envio completo com socket falso: dois uploads e uma mensagem sonora citand
 
   await sendSoundSticker(socket, '5511800000000@s.whatsapp.net', { sticker, audio, durationMs, quoted });
 
-  assert.deepEqual(uploads, ['sticker', 'audio']);
+  assert.deepEqual([...uploads].sort(), ['audio', 'sticker']); // sobem ao mesmo tempo, em qualquer ordem
   assert.ok(relayed);
   const wrapped = protoFields(one(protoFields(one(protoFields(relayed), 134)), 1));
   const stickerFields = protoFields(one(wrapped, 26));

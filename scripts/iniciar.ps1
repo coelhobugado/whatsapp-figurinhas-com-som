@@ -116,5 +116,5 @@ if (-not (Test-Path 'sessao\creds.json')) {
 }
 Write-Host '   Para desligar o bot, feche esta janela ou aperte Ctrl + C.' -ForegroundColor White
 $env:ABRIR_QR = 'true'
-npm start
+npm start --silent
 if ($LASTEXITCODE -ne 0) { Read-Host "`nO bot parou com erro. Aperte Enter para fechar" | Out-Null }
