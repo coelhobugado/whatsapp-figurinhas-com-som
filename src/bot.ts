@@ -1,24 +1,39 @@
+import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { createInterface, type Interface } from 'node:readline';
 import makeWASocket, {
   DisconnectReason, downloadMediaMessage, jidDecode, normalizeMessageContent, useMultiFileAuthState,
   type WAMessage, type WASocket,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
-import { findMedia, findMessageLink, formatTime, HELP_TEXT, messageText, parseClip, parseCommand, parseFit, allowedNumberWarnings, phoneVariants, type Command } from './commands.js';
+import {
+  ADMIN_HELP_TEXT, allowedNumberWarnings, findMedia, findMessageLink, formatTime, HELP_TEXT, messageText,
+  parseClip, parseCommand, parseFit, parseUpdateAction, phoneVariants, type Command, type UpdateAction,
+} from './commands.js';
 import { createAnimatedSticker, createStaticSticker, MAX_INPUT_BYTES, MAX_SECONDS, type StickerResult } from './convert.js';
 import { checkTools, ConversionError, ToolError } from './ffmpeg.js';
 import { downloadFromLink, LinkError, PLATFORM_NAME, youtubeStart, type FoundLink, type LinkClip } from './link-download.js';
 import { JobQueue, TimeoutError } from './queue.js';
 import { markConnected, setQr, startQrPage } from './qr-page.js';
 import { sendSoundSticker } from './sound-sticker.js';
+import {
+  checkForUpdate, EXIT_RESTART, EXIT_RESTART_INSTALL, ROOT, saveEnvSetting, UPDATE_INTERVAL_MS, type UpdateCheck,
+} from './updater.js';
 
 // ---------------------------------------------------------------- configuração (.env)
 const AUTH_DIR = process.env.AUTH_DIR || './sessao';
 const QR_PORT = Number(process.env.QR_PORT || 3999);
+const numberList = (value: string | undefined) => (value ?? '').split(/[,;\s]+/).filter(n => /\d/.test(n));
 /** Números (DDI+DDD+número, só dígitos) que podem usar o bot. Vazio = qualquer pessoa. */
-const ALLOWED_LIST = (process.env.ALLOWED_NUMBERS ?? '').split(/[,;\s]+/).filter(n => /\d/.test(n));
+const ALLOWED_LIST = numberList(process.env.ALLOWED_NUMBERS);
 const ALLOWED = new Set(ALLOWED_LIST.flatMap(phoneVariants));
+/** Quem pode usar os comandos de dono (!atualizar), além do próprio número do bot. */
+const ADMIN_LIST = numberList(process.env.ADMIN_NUMBERS);
+const ADMIN = new Set(ADMIN_LIST.flatMap(phoneVariants));
+/** Atualização automática: ligada, a não ser que AUTO_UPDATE=false (ou "!atualizar off"). */
+let autoUpdate = process.env.AUTO_UPDATE !== 'false';
 /** Nome mostrado ao tocar na figurinha (metadados EXIF). */
 const STICKER_META = { packName: process.env.STICKER_PACK_NAME ?? 'Criada por Dexter', publisher: process.env.STICKER_PUBLISHER ?? '' };
 /** DEBUG=true registra a chegada de cada mensagem e o tempo das etapas (sem conteúdo; de números, só os 4 últimos dígitos de quem foi recusado). */
@@ -30,7 +45,10 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
 let socket: WASocket;
 let reconnectAttempt = 0;
 let reconnectTimer: NodeJS.Timeout | undefined;
+let updateTimer: NodeJS.Timeout | undefined;
 let stopping = false;
+/** Baixando uma versão nova: pedidos novos esperam o bot reabrir. */
+let updating = false;
 
 const log = (...parts: unknown[]) => console.log(`[${new Date().toLocaleTimeString('pt-BR')}]`, ...parts);
 const logError = (...parts: unknown[]) => console.error(`[${new Date().toLocaleTimeString('pt-BR')}]`, ...parts);
@@ -62,10 +80,18 @@ async function senderPhone(message: WAMessage): Promise<string | undefined> {
   return undefined;
 }
 
+/** Quem cuida do bot: o próprio número do bot (mensagem "de mim") ou um número do ADMIN_NUMBERS. */
+async function isAdmin(message: WAMessage): Promise<boolean> {
+  if (message.key.fromMe) return true;
+  if (!ADMIN.size) return false;
+  const phone = await senderPhone(message);
+  return !!phone && ADMIN.has(phone);
+}
+
 async function allowed(message: WAMessage): Promise<boolean> {
   if (message.key.fromMe || !ALLOWED.size) return true;
   const phone = await senderPhone(message);
-  const ok = !!phone && ALLOWED.has(phone);
+  const ok = !!phone && (ALLOWED.has(phone) || ADMIN.has(phone));
   if (!ok && DEBUG) log(`[recusado] remetente ${phone ? `…${phone.slice(-4)} (${phone.length} dígitos) não está em ALLOWED_NUMBERS` : 'sem número conhecido (só @lid, sem mapa para telefone)'}`);
   return ok;
 }
@@ -154,7 +180,7 @@ function clipNotice(result: StickerResult, startOffset: number, explicit: boolea
 }
 
 async function handle(command: Command, text: string, message: WAMessage): Promise<void> {
-  if (command === 'ajuda') { await reply(message, HELP_TEXT); return; }
+  if (command === 'ajuda') { await reply(message, (await isAdmin(message)) ? `${HELP_TEXT}\n\n${ADMIN_HELP_TEXT}` : HELP_TEXT); return; }
   const media = findMedia(message);
   const link = media ? undefined : findMessageLink(message);
   if (!media && !link) {
@@ -224,6 +250,157 @@ async function handle(command: Command, text: string, message: WAMessage): Promi
   }
 }
 
+// ---------------------------------------------------------------- atualização automática
+
+type UpdateOutcome = Exclude<UpdateCheck, { status: 'available' }>
+  | { status: 'updated'; from: string; to: string; dependencies: boolean };
+
+/** Confere o GitHub e, se houver versão nova, espera os pedidos em andamento e instala. */
+async function runUpdate(): Promise<UpdateOutcome> {
+  let check: UpdateCheck;
+  try { check = await checkForUpdate(); }
+  catch (error) { return { status: 'skipped', reason: `não consegui conferir agora (${error instanceof Error ? error.message : String(error)})` }; }
+  if (check.status !== 'available') return check;
+  const { plan } = check;
+  updating = true;
+  log(`Versão nova encontrada (${plan.current} → ${plan.latest}). Terminando os pedidos em andamento...`);
+  await Promise.race([queue.idle(), wait(4 * 60_000)]);
+  try {
+    const { dependencies } = await plan.apply();
+    log(`Bot atualizado para ${plan.latest}${plan.changes ? ` (${plan.changes} mudança(s))` : ''}.`);
+    return { status: 'updated', from: plan.current, to: plan.latest, dependencies };
+  } catch (error) {
+    updating = false;
+    logError('A atualização falhou:', error);
+    return { status: 'skipped', reason: 'a atualização falhou no meio (o motivo está no terminal do bot)' };
+  }
+}
+
+/** Fecha a conexão e reabre o bot com a versão nova. */
+async function restartAfterUpdate(dependencies: boolean): Promise<void> {
+  stopping = true;
+  clearTimeout(reconnectTimer);
+  clearTimeout(updateTimer);
+  // Solta o teclado para a versão nova (no caminho sem inicializador, ela roda como filha deste processo).
+  terminalInput?.close();
+  process.stdin.pause();
+  await wait(1500); // deixa as últimas respostas saírem
+  socket?.end(undefined);
+  log('Reabrindo o bot com a versão nova...');
+  if (process.env.BOT_LAUNCHER === '1') process.exit(dependencies ? EXIT_RESTART_INSTALL : EXIT_RESTART);
+  // Aberto por um "npm start" de antes do inicializador: abre o inicializador aqui mesmo, no mesmo terminal.
+  const child = spawn(process.execPath, [join(ROOT, 'scripts', 'iniciar-bot.mjs'), ...(dependencies ? ['--instalar'] : [])],
+    { cwd: ROOT, stdio: 'inherit' });
+  child.on('exit', code => process.exit(code ?? 0));
+}
+
+/** Dá para digitar comandos na janela do bot (só quando ela é um terminal de verdade). */
+const TERMINAL = !!process.stdin.isTTY;
+let terminalInput: Interface | undefined;
+/** Última versão nova já avisada no terminal (com a automática desligada), para não repetir o aviso. */
+let announcedVersion = '';
+
+/** A automática já conferiu ao abrir (antes de conectar): a próxima conferência fica para daqui a 6 horas. */
+let checkedAtStartup = false;
+
+/**
+ * Com a automática ligada, confere ao abrir, antes de conectar ao WhatsApp: se houver versão nova, instala e reabre,
+ * e o bot já começa nela. Se o GitHub não responder logo, segue com a versão atual.
+ */
+async function updateAtStartup(): Promise<void> {
+  if (!autoUpdate) return;
+  log('Conferindo se há versão nova do bot...');
+  checkedAtStartup = true;
+  const update = runUpdate();
+  const outcome = await Promise.race([update, wait(30_000).then(() => undefined)]);
+  if (!outcome) {
+    // Segue conectando; se a resposta chegar depois e houver versão nova, instala e reabre do mesmo jeito.
+    log('O GitHub está demorando para responder; sigo com a versão atual por enquanto.');
+    void update.then(late => late.status === 'updated' ? restartAfterUpdate(late.dependencies) : undefined);
+    return;
+  }
+  if (outcome.status === 'updated') { await restartAfterUpdate(outcome.dependencies); return new Promise(() => {}); }
+  log(outcome.status === 'current' ? `O bot já está na versão mais nova (${outcome.version}).` : `Atualização automática: ${outcome.reason}.`);
+}
+
+/**
+ * Conferência a cada 6 horas (a primeira 1 minuto depois de conectar, se não conferiu ao abrir). Com a automática
+ * ligada, instala; desligada, só avisa no terminal que saiu versão nova.
+ */
+function scheduleUpdates(): void {
+  if (updateTimer) return;
+  const tick = async () => {
+    if (updating || stopping) return;
+    if (!autoUpdate) {
+      const check = await checkForUpdate().catch(() => undefined);
+      if (check?.status === 'available' && check.plan.latest !== announcedVersion) {
+        announcedVersion = check.plan.latest;
+        log(`Saiu uma versão nova do bot (${check.plan.current} → ${check.plan.latest}). Para instalar, ` +
+          `${TERMINAL ? 'digite atualizar aqui e aperte Enter, ou ' : ''}mande !atualizar ao bot.`);
+      }
+      return;
+    }
+    const outcome = await runUpdate();
+    if (outcome.status === 'updated') await restartAfterUpdate(outcome.dependencies);
+    else if (outcome.status === 'skipped') log(`Atualização automática: ${outcome.reason}.`);
+  };
+  updateTimer = setTimeout(() => {
+    void tick();
+    updateTimer = setInterval(() => { void tick(); }, UPDATE_INTERVAL_MS);
+  }, checkedAtStartup ? UPDATE_INTERVAL_MS : 60_000);
+}
+
+/**
+ * Executa "atualizar", "atualizar on" ou "atualizar off", vindo do WhatsApp ou do terminal.
+ * `say` recebe o texto com *negrito* do WhatsApp; `mark` põe a reação na mensagem, quando há uma.
+ */
+async function updateAction(action: UpdateAction, say: (text: string) => Promise<void>, mark: (emoji: string) => Promise<void> = async () => {}): Promise<void> {
+  if (action !== 'agora') {
+    autoUpdate = action === 'ligar';
+    const saved = await saveEnvSetting('AUTO_UPDATE', String(autoUpdate)).then(() => true,
+      error => { logError('Não consegui gravar no .env:', error); return false; });
+    await say((autoUpdate
+      ? 'Atualização automática *ligada*. Confiro se há versão nova a cada 6 horas.'
+      : 'Atualização automática *desligada*. Para atualizar uma vez, use *!atualizar*. Para ligar de novo, *!atualizar on*.') +
+      (saved ? '' : '\n(Não consegui gravar no arquivo .env, então isso vale só até o bot reiniciar.)'));
+    return;
+  }
+  if (updating) { await say('Já estou me atualizando. Volto em instantes.'); return; }
+  await mark('⏳');
+  const outcome = await runUpdate();
+  if (outcome.status === 'updated') {
+    await mark('✅');
+    await say(`Atualizei o bot (${outcome.from} → ${outcome.to}). Reiniciando, volto em alguns segundos.`);
+    await restartAfterUpdate(outcome.dependencies);
+    return;
+  }
+  await mark(outcome.status === 'current' ? '✅' : '❌');
+  await say(outcome.status === 'current'
+    ? `O bot já está na versão mais nova (${outcome.version}). Atualização automática: *${autoUpdate ? 'ligada' : 'desligada'}*.`
+    : `Não atualizei: ${outcome.reason}.`);
+}
+
+async function handleUpdateCommand(text: string, message: WAMessage): Promise<void> {
+  if (!(await isAdmin(message))) { await reply(message, 'Só quem cuida do bot pode usar o *!atualizar*.'); return; }
+  const action = parseUpdateAction(text);
+  if (!action) { await reply(message, 'Use *!atualizar* para atualizar agora, ou *!atualizar off* / *!atualizar on* para a atualização automática.'); return; }
+  if (action !== 'agora') log(`Atualização automática ${action === 'ligar' ? 'ligada' : 'desligada'} pelo WhatsApp (!atualizar).`);
+  await updateAction(action, text => reply(message, text), emoji => react(message, emoji));
+}
+
+/** Comandos digitados na janela do bot: "atualizar", "atualizar on", "atualizar off" (com ou sem "!"). */
+function listenTerminal(): void {
+  if (!TERMINAL || terminalInput) return;
+  terminalInput = createInterface({ input: process.stdin });
+  terminalInput.on('line', line => {
+    const text = `!${line.trim().replace(/^!/, '')}`;
+    if (text === '!') return;
+    const action = parseCommand(text) === 'atualizar' ? parseUpdateAction(text) : undefined;
+    if (!action) { log('Aqui na janela dá para digitar: atualizar · atualizar off · atualizar on'); return; }
+    updateAction(action, async message => log(message.replace(/\*/g, ''))).catch(error => logError('Falha no atualizar:', error));
+  });
+}
+
 function logArrival(type: string, message: WAMessage): void {
   const chat = message.key.remoteJid?.split('@')[1] ?? '?';
   const content = normalizeMessageContent(message.message);
@@ -241,6 +418,8 @@ async function onMessage(message: WAMessage): Promise<void> {
   const command = parseCommand(text);
   if (!command || !firstTime(message)) return;
   if (!(await allowed(message))) return;
+  if (command === 'atualizar') { await handleUpdateCommand(text, message); return; }
+  if (updating) { await reply(message, 'Estou instalando uma versão nova do bot. Mande de novo daqui a um minuto.'); return; }
 
   const owner = `${message.key.remoteJid}|${message.key.participant ?? ''}|${message.key.fromMe ? 'eu' : ''}`;
   const result = queue.add(owner, () => handle(command, text, message));
@@ -269,6 +448,11 @@ async function connect(): Promise<void> {
       reconnectAttempt = 0;
       markConnected();
       log(`Bot conectado. Comandos: !som, !fig, !ajuda. ${ALLOWED.size ? `Liberado para ${ALLOWED_LIST.length} número(s).` : 'Liberado para todos.'}`);
+      if (!updateTimer) log(autoUpdate
+        ? `Atualização automática ligada (confere a cada 6 horas). Para desligar, ${TERMINAL ? 'digite atualizar off aqui e aperte Enter, ou ' : ''}mande !atualizar off ao bot.`
+        : `Atualização automática desligada. Para atualizar, ${TERMINAL ? 'digite atualizar aqui e aperte Enter, ou ' : ''}mande !atualizar ao bot.`);
+      scheduleUpdates();
+      listenTerminal();
     }
     if (connection === 'close' && !stopping && socket === current) {
       const status = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
@@ -320,4 +504,5 @@ if (problems.length) {
   console.error('Instale um FFmpeg completo (ex.: https://www.gyan.dev/ffmpeg/builds/ no Windows, "apt install ffmpeg" no Linux, "brew install ffmpeg" no macOS).');
   process.exit(1);
 }
+await updateAtStartup();
 await connect();

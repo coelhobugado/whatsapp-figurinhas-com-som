@@ -2,12 +2,13 @@ import { normalizeMessageContent, type proto, type WAMessage } from '@whiskeysoc
 import type { FitMode } from './convert.js';
 import { findLink, type FoundLink } from './link-download.js';
 
-export type Command = 'som' | 'figurinha' | 'ajuda';
+export type Command = 'som' | 'figurinha' | 'ajuda' | 'atualizar';
 
 const ALIASES: Record<string, Command> = {
   '!som': 'som', '!fs': 'som', '!figsom': 'som',
   '!fig': 'figurinha', '!figurinha': 'figurinha', '!f': 'figurinha', '!s': 'figurinha',
   '!ajuda': 'ajuda', '!help': 'ajuda', '!comandos': 'ajuda',
+  '!atualizar': 'atualizar', '!update': 'atualizar',
 };
 
 export const HELP_TEXT = [
@@ -24,6 +25,24 @@ export const HELP_TEXT = [
   'A figurinha preenche o quadrado cortando as sobras. Para manter a imagem inteira, use *!som inteiro* ou *!fig inteiro*.',
   'Limites: até 10 segundos por figurinha, arquivo de até 16 MB. Vídeos mandados como documento também valem.',
 ].join('\n');
+
+/** Parte da ajuda que só aparece para quem cuida do bot (o próprio número do bot e o `ADMIN_NUMBERS`). */
+export const ADMIN_HELP_TEXT = [
+  '*Para quem cuida do bot:*',
+  '*!atualizar* — confere se há versão nova e instala agora.',
+  '*!atualizar off* — desliga a atualização automática. *!atualizar on* liga de novo.',
+].join('\n');
+
+export type UpdateAction = 'agora' | 'ligar' | 'desligar';
+
+/** "!atualizar" → agora; "!atualizar off/desligar" → desligar; "!atualizar on/ligar" → ligar. */
+export function parseUpdateAction(text: string): UpdateAction | undefined {
+  const arg = text.trim().split(/\s+/)[1]?.toLowerCase();
+  if (!arg) return 'agora';
+  if (['off', 'desligar', 'desativar', 'nao', 'não'].includes(arg)) return 'desligar';
+  if (['on', 'ligar', 'ativar', 'sim'].includes(arg)) return 'ligar';
+  return undefined;
+}
 
 /** Trecho escolhido do vídeo, em segundos. */
 export type Clip = { start: number; seconds?: number };

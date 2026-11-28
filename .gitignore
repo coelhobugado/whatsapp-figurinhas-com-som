@@ -6,3 +6,5 @@ saida/
 *.log
 .claude/
 .DS_Store
+# Versão instalada pelo ZIP (usada pela atualização automática).
+.versao

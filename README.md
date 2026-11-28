@@ -45,6 +45,7 @@ O bot roda no seu computador ou servidor, conectado a um número de WhatsApp com
 - 🔗 **Direto do link**: YouTube, TikTok ou Instagram, sem baixar nada no celular.
 - ⏱️ **Trecho exato**: `!som 0:42` ou `!som 0:42-0:47`, até de vídeos de horas (só o pedaço é baixado). Link do YouTube com tempo (`?t=42`) já começa no ponto certo.
 - 🖱️ **Instalação de 1 clique** no Windows: instala o que falta e abre o QR no navegador.
+- 🔄 **Atualiza sozinho**: confere o GitHub a cada 6 horas, instala a versão nova e reabre. Dá para desligar digitando `atualizar off` na janela do bot (ou `!atualizar off` pelo WhatsApp, para quem cuida do bot).
 - ⚡ **Rápido**: ~3–8 s por figurinha, mesmo com vídeo 1080p pesado ([veja como](#como-ficou-rápido)).
 - 🖼️ **Sem bordas pretas**: preenche o quadrado 512×512 cortando o centro, ou `inteiro` para manter a imagem toda com fundo transparente.
 - 🏷️ **Nome do pacote personalizado** ("Criada por …") gravado na figurinha.
@@ -62,6 +63,7 @@ O bot roda no seu computador ou servidor, conectado a um número de WhatsApp com
 | `!som 0:42 <link>` | Começa no **0:42** e usa até 10 s. `!som 0:42-0:47` usa só esse pedaço. Também vale com vídeo enviado. |
 | `!fig` (ou `!f`, `!s`) | Figurinha comum, sem som, de foto, vídeo, GIF ou link (aceita o trecho também). |
 | `!ajuda` | Lista os comandos. |
+| `!atualizar` | **Só para quem cuida do bot** (não aparece para os outros). Confere se há versão nova e instala agora. `!atualizar off` / `on` desliga ou liga a [atualização automática](#atualização-automática). |
 
 - Formatos de tempo aceitos: `42`, `42s`, `0:42`, `1:02:03`. No YouTube, o link de "Compartilhar › Começar em" (`?t=42`) já define o início.
 - Também dá para **responder** a uma mensagem que tenha o link ou o vídeo com o comando.
@@ -118,11 +120,45 @@ Na primeira vez aparece um **QR** no terminal e também como imagem em **http://
 
 Pronto: mande um vídeo com a legenda `!som` para o número do bot.
 
+## Atualização automática
+
+Toda vez que você abre o bot, antes de conectar no WhatsApp, ele confere se saiu versão nova no GitHub. Se saiu, instala, reabre sozinho e já começa na versão nova. Depois, com ele ligado, confere de novo a cada 6 horas: se sair versão nova, termina os pedidos em andamento, instala e reabre. Quando as dependências mudam, ele roda o `npm ci` sozinho. Tudo aparece na mesma janela do cmd/terminal:
+
+```
+Conferindo se há versão nova do bot...
+Versão nova encontrada (2b89efa → f3ebf34). Terminando os pedidos em andamento...
+Bot atualizado para f3ebf34 (1 mudança(s)).
+Reabrindo o bot com a versão nova...
+Conferindo se há versão nova do bot...
+O bot já está na versão mais nova (f3ebf34).
+Bot conectado.
+``` A sessão do WhatsApp (`sessao/`) e o `.env` nunca são tocados.
+
+- **Baixou pelo ZIP**: ele baixa o pacote da versão nova do GitHub e copia por cima. Se você mudou arquivos do código, desligue a atualização, senão as mudanças são substituídas.
+- **Baixou com `git clone`**: ele faz `git pull` (só avança, `--ff-only`). Se você mudou arquivos do projeto ou tem commits que não estão no GitHub, ele não mexe em nada e só avisa no terminal.
+
+Dá para controlar de dois jeitos:
+
+- **Na janela do bot** (o cmd/terminal onde ele está rodando): digite o comando e aperte Enter.
+- **Pelo WhatsApp**, só quem cuida do bot: o **próprio número do bot** (mandando no "conversar comigo mesmo" do celular do bot) e os números em `ADMIN_NUMBERS`. Para os outros usuários o comando não funciona e nem aparece no `!ajuda`.
+
+| Na janela do bot | No WhatsApp | O que faz |
+|---|---|---|
+| `atualizar` | `!atualizar` | Confere e instala agora, mesmo com a automática desligada. |
+| `atualizar off` | `!atualizar off` | Desliga a atualização automática (grava `AUTO_UPDATE=false` no `.env`). |
+| `atualizar on` | `!atualizar on` | Liga de novo. |
+
+Com a automática desligada, o bot continua conferindo e só **avisa na janela** quando sai versão nova ("digite atualizar aqui e aperte Enter").
+
+> Quem instalou antes desta função precisa atualizar à mão **uma vez** (baixar o ZIP de novo, mantendo `sessao/` e `.env`, ou `git pull`). Depois disso ele se atualiza sozinho.
+
 ## Configuração (`.env`)
 
 | Variável | Padrão | Para quê |
 |---|---|---|
 | `ALLOWED_NUMBERS` | vazio (todos) | Números que podem usar o bot (só dígitos, com DDI e DDD, separados por vírgula). Ex.: `5511999998888`. Número brasileiro sem o 55, ou com/sem o 9 da frente, também é reconhecido. |
+| `ADMIN_NUMBERS` | vazio | Números de quem cuida do bot e pode usar o `!atualizar` (mesmo formato do `ALLOWED_NUMBERS`). O próprio número do bot sempre pode. |
+| `AUTO_UPDATE` | `true` | `false` desliga a [atualização automática](#atualização-automática). O `!atualizar off`/`on` muda esse valor. |
 | `STICKER_PACK_NAME` | `Criada por Dexter` | Nome que aparece ao tocar na figurinha. |
 | `STICKER_PUBLISHER` | vazio | Autor mostrado ao lado do nome. |
 | `AUTH_DIR` | `./sessao` | Onde a sessão do WhatsApp é salva. |
@@ -191,6 +227,8 @@ O campo 134 e o `StickerMessage.26` não existem no protobuf do [Baileys](https:
 | [`src/commands.ts`](src/commands.ts) | Comandos e localização da mídia (inclusive citada) |
 | [`src/queue.ts`](src/queue.ts) | Fila com limite por pessoa e tempo máximo |
 | [`src/qr-page.ts`](src/qr-page.ts) | Página local com o QR de vinculação |
+| [`src/updater.ts`](src/updater.ts) | Atualização automática (git ou pacote do GitHub) |
+| [`scripts/iniciar-bot.mjs`](scripts/iniciar-bot.mjs) | Inicializador do `npm start`: reabre o bot depois de atualizar |
 
 ```bash
 npm run converter -- video.mp4 [--inteiro] [--trecho 0:42-0:47]   # gera saida/video.webp e saida/video.ogg, sem WhatsApp
@@ -232,6 +270,8 @@ Sim, o bot precisa estar rodando para responder. Para ficar 24 h, rode num servi
 | Bot não responde | Rode com `DEBUG=true` e veja se as mensagens chegam; confira `ALLOWED_NUMBERS`. |
 | "Outra cópia do bot abriu esta mesma sessão" | Só pode haver um bot rodando por sessão. Feche o outro. |
 | "O celular desconectou o bot" | Apague a pasta `sessao/` e escaneie o QR de novo. |
+| "Atualização automática: há arquivos do bot modificados…" | Você mudou arquivos do projeto (instalação pelo git). Desfaça com `git checkout .` ou atualize à mão. |
+| "Não consegui instalar as dependências novas" | Confira a internet e rode `npm install` na pasta do bot. |
 
 ## Avisos
 
@@ -253,6 +293,7 @@ Sim, o bot precisa estar rodando para responder. Para ficar 24 h, rode num servi
 - Fast: ~3–8 s per sticker. The video is decoded once, the WebP quality level is picked by sampling, and the audio is extracted in parallel.
 - Fills the 512×512 square (center crop) or keeps the whole frame with transparent borders (`!som inteiro`).
 - Custom sticker pack name, per-user fair queue, friendly error messages, silent-audio detection, graceful fallback to a regular sticker.
+- Self-updating: checks GitHub every 6 hours (`git pull --ff-only` for clones, release tarball for ZIP installs), then restarts itself. The bot owner can turn it off with `!atualizar off` (or `AUTO_UPDATE=false`).
 - Conversion runs locally; no third-party conversion service. Links are fetched from the platforms themselves (one TikTok fallback uses SSSTik).
 
 **Quick start:** install Node.js 22.12+ and FFmpeg (with libwebp, libopus, libx264), then:

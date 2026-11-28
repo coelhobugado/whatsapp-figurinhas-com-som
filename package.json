@@ -18,7 +18,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "start": "node --env-file-if-exists=.env --import tsx src/bot.ts",
+    "start": "node scripts/iniciar-bot.mjs",
     "converter": "tsx src/cli.ts",
     "bench": "tsx scripts/bench.ts",
     "typecheck": "tsc --noEmit",

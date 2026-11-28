@@ -60,13 +60,19 @@ O usuário típico **não é programador**. Ele quer o bot funcionando e talvez 
 
 Para desligar: `Ctrl + C` no terminal. Nas próximas vezes basta `npm start` (a sessão fica salva em `sessao/`).
 
+**Atualização:** o bot se atualiza sozinho ao abrir (antes de conectar) e depois a cada 6 horas (git `--ff-only` ou pacote
+.tar.gz do GitHub, guardando o commit em `.versao`) e reabre pelo inicializador. Para desligar: digitar `atualizar off` na janela do bot, mandar `!atualizar off` pelo
+WhatsApp (só o número do bot ou `ADMIN_NUMBERS`), ou `AUTO_UPDATE=false` no `.env`. Quem instalou antes dessa função precisa
+atualizar à mão uma vez (baixar o ZIP de novo mantendo `sessao/` e `.env`, ou `git pull`).
+
 ## 4. Comandos do bot (o que o usuário final digita no WhatsApp)
 
 | Comando | Apelidos | Faz |
 |---|---|---|
 | `!som` | `!fs`, `!figsom` | Figurinha animada **com som** (vídeo, GIF, vídeo como documento, ou link) |
 | `!fig` | `!figurinha`, `!f`, `!s` | Figurinha comum, sem som (foto, vídeo, GIF, ou link) |
-| `!ajuda` | `!help`, `!comandos` | Lista os comandos |
+| `!ajuda` | `!help`, `!comandos` | Lista os comandos (para quem cuida do bot, inclui o `!atualizar`) |
+| `!atualizar` | `!update` | **Só dono** (número do bot ou `ADMIN_NUMBERS`): atualiza agora; `off`/`on` desliga/liga a automática |
 
 - Funciona mandando a mídia **com a legenda** ou **respondendo** a uma mídia/link com o comando.
 - `inteiro` depois do comando (`!som inteiro`) mantém a imagem toda com bordas transparentes; o padrão corta o centro.
@@ -87,6 +93,8 @@ Para desligar: `Ctrl + C` no terminal. Nas próximas vezes basta `npm start` (a 
 | "O FFmpeg não é encontrado" | `FFMPEG_PATH=` e `FFPROBE_PATH=` com o caminho completo do executável |
 | "Quero ver o que está acontecendo" | `DEBUG=true` |
 | "Fila enche rápido" | `MAX_PENDING=10` |
+| "Não quero que ele se atualize sozinho" | `AUTO_UPDATE=false` (ou digitar `atualizar off` na janela do bot) |
+| "Quero usar o !atualizar do meu número" | `ADMIN_NUMBERS=5511999998888` (mesmo formato do `ALLOWED_NUMBERS`) |
 
 Depois de mudar o `.env`, é preciso **parar (`Ctrl + C`) e rodar `npm start` de novo**.
 Vazio em `ALLOWED_NUMBERS` = **qualquer pessoa** pode usar. O próprio número do bot sempre pode.
@@ -104,6 +112,8 @@ Vazio em `ALLOWED_NUMBERS` = **qualquer pessoa** pode usar. O próprio número d
 | `src/link-download.ts` | Pega o vídeo de links do TikTok/Instagram/YouTube para `!som`/`!fig`, com fontes de reserva (+ `yt-dlp` opcional). Bibliotecas que falam com a plataforma (exceção: a fonte de reserva `tiktok-api-dl v2` usa o site SSSTik) e FFmpeg limitado a HTTPS. Busca só o trecho pedido (`fetchClip`) quando o vídeo é grande |
 | `src/queue.ts` | Fila: um pedido por vez, um por pessoa, limite total, timeout de 3 min |
 | `src/qr-page.ts` | Página local com o QR |
+| `src/updater.ts` | Atualização automática: `checkForUpdate()` (git ou pacote do GitHub), `installTarball`, `saveEnvSetting`. Nunca toca `.env`, `sessao/`, `saida/`, `node_modules/` |
+| `scripts/iniciar-bot.mjs` | O que o `npm start` roda: abre `src/bot.ts` e o reabre quando ele sai com 75 (atualizou) ou 76 (atualizou e precisa de `npm ci`). JS puro, só módulos do Node |
 | `src/cli.ts` | `npm run converter -- video.mp4 [--trecho 0:42-0:47]` — testa a conversão sem WhatsApp, grava em `saida/` |
 | `INICIAR-WINDOWS.bat` + `scripts/iniciar.ps1` | Instalador/inicializador de 1 clique no Windows (winget, npm ci, .env, abre o QR) |
 | `iniciar-mac-linux.sh` | O mesmo para macOS/Linux |
@@ -132,6 +142,8 @@ Vazio em `ALLOWED_NUMBERS` = **qualquer pessoa** pode usar. O próprio número d
 | `O WhatsApp recusou a conexão (403)` | Número possivelmente bloqueado | Não há conserto no código; usar outro número |
 | Figurinha chegou sem som | Vídeo sem áudio, áudio mudo, ou WhatsApp recusou o formato | O bot já explica o motivo na conversa; é comportamento esperado |
 | `!som <link>` / `!fig <link>` falha | Sites mudam e quebram os baixadores | Tentar de novo; instalar `yt-dlp` como reserva (`YTDLP_PATH`); atualizar dependências |
+| `Atualização automática: há arquivos do bot modificados…` | Instalação pelo git com arquivos mudados | `git checkout .` para descartar, ou desligar a atualização e atualizar à mão |
+| `Não consegui instalar as dependências novas` | `npm ci` falhou depois de atualizar | Conferir internet e rodar `npm install` na pasta |
 
 ## 8. Regras para a IA ao alterar o código
 
@@ -142,6 +154,8 @@ Vazio em `ALLOWED_NUMBERS` = **qualquer pessoa** pode usar. O próprio número d
 - Mexer no patch de `proto.Message.encode` em `src/sound-sticker.ts` sem rodar os testes: ele precisa deixar **todas as outras mensagens byte a byte iguais** (há teste para isso).
 - Remover o fallback "manda sem som e explica o motivo". O usuário final nunca deve ficar sem resposta.
 - Adicionar serviço externo de conversão: a conversão é local por princípio (privacidade).
+- Fazer o atualizador (`src/updater.ts`) tocar em `.env`, `sessao/`, `saida/` ou `node_modules/`, ou baixar de outro lugar que não o GitHub do projeto.
+- Usar dependências npm em `scripts/iniciar-bot.mjs`: ele roda enquanto o `npm ci` troca o `node_modules`.
 
 **Sempre:**
 - Manter textos para o usuário final em português, curtos e amigáveis.
