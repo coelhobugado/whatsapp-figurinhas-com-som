@@ -28,7 +28,20 @@ function Instalar-Com-Winget($id, $nome) {
   winget install -e --id $id --accept-package-agreements --accept-source-agreements --silent
   Atualizar-Path
 }
+# Acha o Node mesmo quando o Windows ainda não pôs a pasta dele no PATH (janela antiga, PATH cheio,
+# instalador que não registrou). Também deixa essa pasta na frente do PATH: o npm roda os scripts
+# pelo cmd, que procura o "node" de novo e daria "'node' não é reconhecido como um comando interno".
+function Achar-Node {
+  if (-not (Get-Command node -CommandType Application -ErrorAction SilentlyContinue)) {
+    $pasta = @("$env:ProgramFiles\nodejs", "${env:ProgramFiles(x86)}\nodejs", "$env:LOCALAPPDATA\Programs\nodejs", "$env:NVM_SYMLINK") |
+      Where-Object { $_ -and (Test-Path -LiteralPath "$_\node.exe") } | Select-Object -First 1
+    if ($pasta) { $env:Path = "$pasta;$env:Path" }
+  }
+  $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($node) { $env:Path = "$(Split-Path -Parent $node.Source);$env:Path" }
+}
 function Versao-Node {
+  Achar-Node
   if (-not (Tem-Comando 'node')) { return $null }
   try { return [version]((node -v).TrimStart('v')) } catch { return $null }
 }
@@ -46,7 +59,7 @@ if (-not $versao -or $versao -lt $minimo) {
   Instalar-Com-Winget 'OpenJS.NodeJS.LTS' 'Node.js'
   $versao = Versao-Node
   if (-not $versao -or $versao -lt $minimo) {
-    Parar-Com-Erro "Não consegui instalar o Node.js. Baixe a versão LTS em https://nodejs.org, instale e rode de novo."
+    Parar-Com-Erro "Não encontrei o Node.js. Reinicie o computador e abra o INICIAR-WINDOWS.bat de novo. Se continuar, baixe a versão LTS em https://nodejs.org, instale e rode de novo."
   }
 }
 Escrever-Ok "Node.js $versao"
